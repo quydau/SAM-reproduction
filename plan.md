@@ -1,6 +1,6 @@
 # Kế hoạch repo PyTorch để thực nghiệm SAM và SGD
 
-Tài liệu này mô tả thiết kế và các bước triển khai repo PyTorch mới. Hiện tại đây chỉ là kế hoạch; chưa có code huấn luyện nào được viết lại. README gốc của repo SAM/JAX được giữ nguyên.
+Tài liệu này mô tả thiết kế và cách vận hành repo PyTorch dùng để so sánh SAM/SGD. Repo JAX/Flax gốc được giữ nguyên.
 
 ## 1. Mục tiêu và ma trận thực nghiệm
 
@@ -9,7 +9,7 @@ Repo mới thực hiện hai nhóm thí nghiệm độc lập:
 1. Huấn luyện từ đầu WRN-28-10 trên CIFAR-10, với ba biến thể augmentation: `basic`, `cutout`, `autoaugment`.
 2. Fine-tune EfficientNet-B0 pretrained trên ImageNet cho Flowers102 và Oxford-IIIT Pet.
 
-Mỗi điều kiện chạy ba seed. So sánh cùng seed giữa SGD và SAM để giảm nhiễu khi đối chiếu:
+Mỗi lần gọi entry point chỉ chạy một tổ hợp dataset/augmentation, optimizer và seed. Thực hiện ba seed riêng biệt; ghép cùng seed giữa SGD và SAM để giảm nhiễu khi đối chiếu. Tổng số lần gọi:
 
 | Nhóm | Cấu hình | Số lần chạy |
 |---|---|---:|
@@ -19,7 +19,7 @@ Mỗi điều kiện chạy ba seed. So sánh cùng seed giữa SGD và SAM đ�
 
 Các siêu tham số huấn luyện như epoch, batch size, scheduler, weight decay và cách khởi tạo được khai báo trong config, cố định trong mỗi phép so sánh SGD/SAM và được lưu lại cho từng run.
 
-## 2. Cấu trúc repo đề xuất
+## 2. Cấu trúc repo
 
 ```text
 sam-pytorch/
@@ -38,8 +38,6 @@ sam-pytorch/
 │   ├── optimizers.py            # SGD và SAM
 │   ├── training_utils.py        # train/evaluate loop, scheduler, checkpoint
 │   └── reporting.py             # metric, classification report, results.txt
-├── scripts/
-│   └── run_grid.py
 └── outputs/                 # kết quả cục bộ, không commit vào git
 ```
 
@@ -54,8 +52,8 @@ Thiết kế giữ một package chính và một thư mục config. Hai tác v�
 - **`training_utils.py`**: loop train/evaluate dùng chung, scheduler và lưu checkpoint.
 - **`train.py`**: entry point riêng cho huấn luyện WRN/CIFAR-10.
 - **`finetune.py`**: entry point riêng cho fine-tuning EfficientNet-B0 trên Flowers/Pet.
-- **`reporting.py`**: tính accuracy, precision, recall, F1, confusion matrix, `classification_report`; ghi `results.txt` và tổng hợp ba seed.
-- **`scripts/run_grid.py`**: sinh và chạy đủ 30 cấu hình từ YAML; mỗi run có output riêng.
+- **`reporting.py`**: tính accuracy, precision, recall, F1, confusion matrix, `classification_report`; ghi `results.txt`.
+- Người dùng gọi `train.py` hoặc `finetune.py` một lần cho mỗi optimizer/seed/augmentation; không có grid runner tự chạy hàng loạt.
 
 ## 4. Quy ước augmentation và dữ liệu
 
@@ -76,6 +74,7 @@ outputs/
 ├── cifar10/wrn28x10/cutout/sam/seed_1/
 │   ├── config.yaml
 │   ├── metrics.csv
+│   ├── train.log
 │   ├── results.txt
 │   ├── last.pt
 │   └── best.pt
@@ -89,7 +88,7 @@ outputs/
 
 `results.txt` là bản tổng kết đầy đủ, có tối thiểu:
 
-1. **Thông tin lần chạy:** tên thí nghiệm, dataset, model, augmentation, optimizer, seed, thời điểm bắt đầu/kết thúc, trạng thái hoàn tất.
+1. **Thông tin lần chạy:** tên thí nghiệm, dataset, model, augmentation, optimizer, seed, thời điểm bắt đầu/kết thúc, trạng thái hoàn tất. Trong khi chạy, `metrics.txt` được cập nhật trạng thái/metric mới nhất sau mỗi epoch; `train.log` ghi nối tiếp từng dòng tiến độ và thời điểm bắt đầu/kết thúc.
 2. **Môi trường:** phiên bản Python/PyTorch/torchvision, thiết bị (CPU/GPU), tên GPU nếu có, pretrained weights và đường dẫn dữ liệu.
 3. **Toàn bộ hyperparameter:** số epoch, batch size, learning rate ban đầu, lịch học và tham số lịch, momentum, Nesterov, weight decay, SAM `rho`, loss/label smoothing, gradient clipping nếu dùng, kích thước ảnh, normalization, augmentation và mọi tham số liên quan khác. Ghi cả hyperparameter không áp dụng bằng `N/A`, tránh bỏ sót trường.
 4. **Split và lớp:** số mẫu train/validation/test, cách tạo split, danh sách class theo thứ tự index và số lớp.
@@ -99,7 +98,9 @@ outputs/
 
 Classification report nên được xuất dạng văn bản dễ đọc (ví dụ `sklearn.metrics.classification_report`) và kèm confusion matrix có nhãn class. Với CIFAR-10, Flowers102 và Pet, report test thể hiện precision/recall/F1 theo từng class; báo cáo tổng hợp macro/weighted để thấy cả chất lượng trung bình và ảnh hưởng của mất cân bằng lớp.
 
-Sau khi đủ ba seed, `reporting.py` tạo thêm bảng tổng hợp theo dataset/model/augmentation/optimizer, gồm mean ± std của validation accuracy và test accuracy cùng các metric đã chọn. Mỗi `results.txt` vẫn là kết quả đầy đủ của riêng một run; file tổng hợp không thay thế chúng.
+Sau khi đủ ba seed, kết quả từng run có thể được tổng hợp để tính mean ± std theo dataset/model/augmentation/optimizer. Mỗi `results.txt` là báo cáo đầy đủ của riêng một run.
+
+Mỗi entry point yêu cầu `--optimizer sgd|sam`, chấp nhận `--seed` để ghi đè seed YAML, và có hai cờ chạy thử loại trừ lẫn nhau: `--epochs N` hoặc `--steps N`. Khi không truyền cờ giới hạn, giữ nguyên `training.epochs`/`training.max_steps` trong YAML. Cấu hình hiệu lực được lưu cùng output.
 
 ## 6. Các bước implement và file cũ để đối chiếu
 
@@ -110,9 +111,9 @@ Sau khi đủ ba seed, `reporting.py` tạo thêm bảng tổng hợp theo datas
 | 3 | Viết loader Flowers102/Pet bằng torchvision và cố định preprocessing/split. | `sam_jax/train.py` khai báo dataset ở dòng 35–39 nhưng nhánh dispatch dòng 108–141 không hỗ trợ Flowers/Pet; `sam_jax/datasets/dataset_source_imagenet.py` dòng 279–352 tham khảo cách tách train/eval preprocessing cho ảnh lớn. |
 | 4 | Viết WRN-28-10 nhỏ bằng PyTorch và dùng torchvision EfficientNet-B0/pretrained weights. | `sam_jax/models/wide_resnet.py` dòng 182–237 mô tả các group, multiplier và classifier; `sam_jax/models/load_model.py` dòng 77–80 chọn WRN-28-10. EfficientNet JAX nằm trong `sam_jax/efficientnet/efficientnet.py`; bản mới dùng torchvision thay vì port module Flax. |
 | 5 | Viết SAM wrapper trên SGD, tách rõ `first_step`/`second_step` hoặc một bước cập nhật dễ đọc; xác định cách xử lý BatchNorm giữa hai forward. | `sam_jax/training_utils/flax_training.py` dòng 496–568 tính loss, gradient perturbation và nhánh SAM/SGD. |
-| 6 | Viết loop train/evaluate dùng chung nhưng entry point WRN training và EfficientNet fine-tuning riêng. Cố định scheduler/hyperparameter trong từng cặp so sánh. | `sam_jax/training_utils/flax_training.py` dòng 377–396 tạo cosine schedule; dòng 763–893 điều phối epoch, evaluation và metric. |
-| 7 | Viết evaluator phân loại, tạo `classification_report`, confusion matrix và lưu đầy đủ thông tin vào `results.txt`; lưu `metrics.csv`, `last.pt`, `best.pt`. | `sam_jax/training_utils/flax_training.py` dòng 650–692 đánh giá dataset; dòng 170–195 lưu checkpoint; dòng 899–916 lưu tiến độ/checkpoint cuối. Repo cũ không ghi report phân loại dạng đầy đủ theo lớp, nên đây là bổ sung mới. |
-| 8 | Viết grid runner chạy ba seed cho mọi điều kiện; tổng hợp mean/std và xác nhận đủ 30 run có file kết quả/checkpoint. | `sam_jax/train.py` dòng 86–99 gợi ý định danh theo hyperparameter/seed; dùng `flax_training.py` phần log/evaluation để đối chiếu nội dung metric. |
+| 6 | **Đã triển khai:** loop train/evaluate dùng chung trong `sam_pytorch/training_utils.py`; entry point riêng `train.py` và `finetune.py`. YAML truyền các tham số optimizer, SAM, scheduler, batch tích lũy, loss, clipping và BatchNorm. | `sam_jax/training_utils/flax_training.py` dòng 377–396 tạo cosine schedule; dòng 763–893 điều phối epoch, evaluation và metric. |
+| 7 | **Đã triển khai:** evaluator phân loại chọn `best.pt` bằng validation accuracy, chỉ đánh giá test một lần, ghi `classification_report`, confusion matrix có tên lớp và `test_error` vào cả `metrics.txt` và `results.txt`; lưu `metrics.csv`, `train.log`, `last.pt`, `best.pt`, `config.yaml`. Metrics CSV, báo cáo tiến độ và checkpoint được cập nhật sau mỗi epoch; epoch log đồng thời in ra màn hình và append vào file. Tự chọn CUDA/MPS/CPU để hỗ trợ GPU Apple Silicon. | `sam_jax/training_utils/flax_training.py` dòng 650–692 đánh giá dataset; dòng 170–195 lưu checkpoint; dòng 899–916 lưu tiến độ/checkpoint cuối. Repo cũ không ghi report phân loại dạng đầy đủ theo lớp, nên đây là bổ sung mới. |
+| 8 | **Cách chạy:** gọi riêng entry point cho từng optimizer, seed và augmentation; hỗ trợ giới hạn thử nghiệm qua `--epochs` hoặc `--steps`, mặc định đọc giới hạn từ YAML. Tổng hợp ba seed sau khi chạy xong. | `sam_jax/train.py` dòng 86–99 gợi ý định danh theo hyperparameter/seed; dùng `flax_training.py` phần log/evaluation để đối chiếu nội dung metric. |
 
 ## 7. Nguyên tắc so sánh và hoàn tất
 
@@ -120,5 +121,5 @@ Sau khi đủ ba seed, `reporting.py` tạo thêm bảng tổng hợp theo datas
 - Trong mỗi cặp so sánh, giữ nguyên model initialization, batch order/seed, augmentation protocol, số epoch, scheduler, loss và weight decay; chỉ thay optimizer mechanism.
 - Chọn `best.pt` dựa trên validation metric đã quy định trước. Chỉ evaluate test sau khi hoàn tất chọn checkpoint.
 - Fine-tuning dùng cùng pretrained weights cho SGD/SAM trong một seed và cùng quy tắc freeze/unfreeze classifier/backbone.
-- Mỗi run chỉ được xem là hoàn tất khi có `config.yaml`, `results.txt`, `metrics.csv`, `best.pt` và `last.pt`; grid runner ghi nhận run thiếu artifact để có thể chạy lại.
+- Mỗi run chỉ được xem là hoàn tất khi có `config.yaml`, `results.txt`, `metrics.csv`, `best.pt` và `last.pt`; cấu trúc output cho phép chạy lại riêng một tổ hợp bị thiếu.
 - Không nhân bản chức năng đã có trong PyTorch/torchvision/sklearn. Chỉ tự viết phần kiến trúc WRN-28-10, thuật toán SAM nếu không dùng thư viện ngoài, và phần điều phối/lưu kết quả đặc thù cho thí nghiệm.

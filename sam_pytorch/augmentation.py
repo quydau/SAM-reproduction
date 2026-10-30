@@ -27,10 +27,12 @@ class CIFAR10Augmentation:
     OPTIONS = ("none", "basic", "cutout", "autoaugment")
 
     def __init__(self, name: str, crop_padding: int = 4,
-                 cutout_length: int = 16):
+                 cutout_length: int = 16,
+                 horizontal_flip_probability: float = 0.5):
         if name not in self.OPTIONS:
             raise ValueError(f"Unknown CIFAR-10 augmentation: {name}")
-        if crop_padding < 0 or cutout_length < 1:
+        if (crop_padding < 0 or cutout_length < 1
+                or not 0.0 <= horizontal_flip_probability <= 1.0):
             raise ValueError("crop_padding must be >= 0 and cutout_length >= 1")
 
         self.name = name
@@ -45,7 +47,7 @@ class CIFAR10Augmentation:
         # Cutout uses the same per-image transforms as basic augmentation.
         if name in ("basic", "cutout", "autoaugment"):
             ops.extend((
-                transforms.RandomHorizontalFlip(),
+                transforms.RandomHorizontalFlip(horizontal_flip_probability),
                 transforms.RandomCrop(32, padding=crop_padding,
                                       padding_mode="reflect"),
             ))

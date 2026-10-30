@@ -46,7 +46,8 @@ class CIFAR10DataModule:
     def __init__(self, data_root: str | Path, batch_size: int,
                  augmentation: str = "basic", validation_seed: int = 1,
                  num_workers: int = 4, cutout_length: int = 16,
-                 crop_padding: int = 4, pin_memory: Optional[bool] = None):
+                 crop_padding: int = 4, pin_memory: Optional[bool] = None,
+                 horizontal_flip_probability: float = 0.5):
         if batch_size < 1 or num_workers < 0:
             raise ValueError("batch_size must be positive and num_workers >= 0")
 
@@ -62,7 +63,8 @@ class CIFAR10DataModule:
         # Đối tượng này cung cấp biến đổi ảnh và Cutout theo cấu hình đã chọn.
         self.augmentation = CIFAR10Augmentation(
             augmentation, crop_padding=crop_padding,
-            cutout_length=cutout_length)
+            cutout_length=cutout_length,
+            horizontal_flip_probability=horizontal_flip_probability)
 
         # Hai dataset train cùng trỏ tới 50.000 ảnh, nhưng dùng transform khác nhau.
         # Bản augmented dành cho train; bản plain dành cho validation/đánh giá công bằng.
@@ -76,6 +78,7 @@ class CIFAR10DataModule:
         self._test = CIFAR10(
             root=str(self.data_root), train=False, download=True,
             transform=CIFAR10Augmentation("none").image_transform)
+        self.class_names = list(self._test.classes)
 
         # Tạo phép chia có thể tái lập: cùng seed sẽ cho cùng train/validation indices.
         split_generator = torch.Generator().manual_seed(validation_seed)

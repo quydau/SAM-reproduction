@@ -1,6 +1,6 @@
 # Tái lập thí nghiệm SAM bằng PyTorch
 
-Repo phục vụ đồ án môn Học máy, tái lập và so sánh Sharpness-Aware Minimization (SAM) với SGD theo paper [*Sharpness-Aware Minimization for Efficiently Improving Generalization*](https://arxiv.org/abs/2010.01412) của Foret et al. (ICLR 2021). Mã nguồn tham khảo chính thức: [google-research/sam](https://github.com/google-research/sam). Repo JAX/Flax gốc được giữ riêng tại `../sam`; repo này dùng PyTorch để chạy thí nghiệm trên GPU T4.
+Repo phục vụ đồ án môn Học máy, tái lập và so sánh Sharpness-Aware Minimization (SAM) với SGD theo paper [*Sharpness-Aware Minimization for Efficiently Improving Generalization*](https://arxiv.org/abs/2010.01412) của Foret et al. (ICLR 2021). Mã nguồn tham khảo chính thức: [google-research/sam](https://github.com/google-research/sam). Repo JAX/Flax gốc được giữ riêng tại `../sam`; repo này dùng PyTorch và tự chọn CUDA, Apple MPS (GPU Apple Silicon), hoặc CPU.
 
 ## Câu hỏi và phạm vi đồ án
 
@@ -33,7 +33,42 @@ Trên T4 16 GB, cấu hình CIFAR dùng microbatch 64 × tích lũy 4; fine-tuni
 
 ## Chạy thí nghiệm
 
-Các YAML trong [`configs/`](configs/) là cấu hình mẫu được ghi chú nguồn trực tiếp và suy luận. Grid runner và vòng huấn luyện sẽ được triển khai ở các bước tiếp theo theo [`plan.md`](plan.md). Mỗi điều kiện lưu cấu hình thực tế, phiên bản thư viện, metrics, `results.txt`, checkpoint tốt nhất và checkpoint cuối.
+Các YAML trong [`configs/`](configs/) là cấu hình mẫu được ghi chú nguồn trực tiếp và suy luận. Mỗi lần gọi chạy đúng **một optimizer, một seed và một cấu hình augmentation/dataset**. `--optimizer` là bắt buộc; nếu bỏ `--seed`, dùng seed trong YAML. Ví dụ:
+
+```bash
+python -m sam_pytorch.train --config configs/cifar10_wrn28x10.yaml --augmentation basic --optimizer sgd --seed 1
+python -m sam_pytorch.train --config configs/cifar10_wrn28x10.yaml --augmentation basic --optimizer sam --seed 1
+python -m sam_pytorch.train --config configs/cifar10_wrn28x10.yaml --augmentation cutout --optimizer sam --seed 2
+python -m sam_pytorch.train --config configs/cifar10_wrn28x10.yaml --augmentation autoaugment --optimizer sgd --seed 3
+python -m sam_pytorch.finetune --config configs/flowers102_efficientnet_b0.yaml --optimizer sgd --seed 1
+python -m sam_pytorch.finetune --config configs/oxford_iiit_pet_efficientnet_b0.yaml --optimizer sam --seed 2
+```
+
+Để chạy thử ngắn, truyền **một** trong `--epochs N` hoặc `--steps N`. Tham số được chọn ghi đè giới hạn tương ứng trong YAML; hai cờ không dùng đồng thời. Nếu không truyền cờ giới hạn, chương trình dùng nguyên `training.epochs` hoặc `training.max_steps` trong YAML. `--steps` là số lần cập nhật optimizer. Ví dụ `--steps 5` cho fine-tuning hoặc `--epochs 2` cho CIFAR. Tiến độ epoch được in ra terminal và append ngay vào `train.log`; `metrics.csv`, `metrics.txt` (báo cáo tiến độ trong lúc chạy) và checkpoint cũng được cập nhật sau mỗi epoch. Khi hoàn tất, `metrics.txt`/`results.txt` chứa báo cáo đầy đủ; test được đánh giá một lần. Báo cáo gồm `test_error`, classification report theo lớp và confusion matrix. Trên Mac, cài PyTorch/torchvision bản macOS; MPS được tự chọn khi có GPU Apple Silicon.
+
+Để chạy toàn bộ ba seed, ba augmentation CIFAR và hai optimizer, có thể phát sinh từng lệnh riêng theo vòng lặp shell (bỏ `--epochs`/`--steps` để dùng cấu hình đầy đủ):
+
+```bash
+for seed in 1 2 3; do
+  for augmentation in basic cutout autoaugment; do
+    for optimizer in sgd sam; do
+      python -m sam_pytorch.train --config configs/cifar10_wrn28x10.yaml \
+        --augmentation "$augmentation" --optimizer "$optimizer" --seed "$seed"
+    done
+  done
+done
+
+for seed in 1 2 3; do
+  for optimizer in sgd sam; do
+    python -m sam_pytorch.finetune --config configs/flowers102_efficientnet_b0.yaml \
+      --optimizer "$optimizer" --seed "$seed"
+    python -m sam_pytorch.finetune --config configs/oxford_iiit_pet_efficientnet_b0.yaml \
+      --optimizer "$optimizer" --seed "$seed"
+  done
+done
+```
+
+Mỗi lệnh Python trên là một run độc lập; các vòng lặp chỉ tuần tự gọi những lệnh này. Để smoke-run nhanh, thêm `--steps 5` (fine-tuning) hoặc `--epochs 2` (CIFAR) vào lệnh tương ứng.
 
 Output có dạng:
 
