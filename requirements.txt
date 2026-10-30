@@ -1,0 +1,8 @@
+# Install torch and torchvision as a compatible pair for your OS/CUDA runtime.
+# See https://pytorch.org/get-started/locally/ for the matching install command.
+torch>=2.6,<2.11
+torchvision>=0.21,<0.26
+numpy>=1.24
+scipy>=1.10 # Required by torchvision.datasets.Flowers102 to read .mat labels.
+PyYAML>=6.0
+scikit-learn>=1.3

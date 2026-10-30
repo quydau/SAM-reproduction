@@ -1,0 +1,45 @@
+experiment: cifar10_wrn28x10
+dataset: cifar10
+data_root: data
+model: wrn28x10
+num_classes: 10
+augmentation: basic # Run separately as basic, cutout, and autoaugment conditions.
+optimizers: [sgd, sam]
+seed: 1
+
+split:
+  validation_fraction: 0.1
+  seed: 1
+
+training:
+  epochs: 200
+  # Paper batch is 256. On a 16 GB T4, microbatch 64 x accumulation 4 is a
+  # practical estimate; BatchNorm still observes microbatches, not 256 samples.
+  batch_size: 64
+  gradient_accumulation_steps: 4
+  effective_batch_size: 256
+  num_workers: 4
+  learning_rate: 0.1
+  scheduler: cosine
+  weight_decay: 0.0005
+  momentum: 0.9
+  nesterov: true # Explicit in the official repo's SGD optimizer.
+  label_smoothing: 0.0 # Official repo default; smoothing branch is skipped at zero.
+  gradient_clip_norm: 5.0 # Official repo default, applied after gradient synchronization.
+
+sam:
+  rho: 0.05
+
+augmentation_params:
+  crop_padding: 4
+  horizontal_flip_probability: 0.5
+  cutout_length: 16
+  cutout_mask_per_image: false # Match old repo: one spatial mask shared by batch.
+  cutout_after_normalization: true
+  autoaugment_policy: cifar10
+  autoaugment_then_basic: true # Apply CIFAR AutoAugment, then flip/crop as in old repo.
+
+# Direct from paper: 200 epochs, LR 0.1, WD 5e-4, rho 0.05 (CIFAR-10 WRN-28-10).
+# Batch 256 and cosine are also paper/repo settings. T4 microbatching is an adaptation.
+
+output_root: outputs

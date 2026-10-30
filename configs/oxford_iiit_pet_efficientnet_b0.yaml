@@ -1,0 +1,47 @@
+experiment: oxford_iiit_pet_efficientnet_b0
+dataset: oxford_iiit_pet
+data_root: data
+model: efficientnet_b0
+num_classes: 37
+optimizers: [sgd, sam]
+seed: 1
+
+split:
+  validation_fraction: 0.1
+  seed: 1
+
+training:
+  # T4 memory adaptation: effective batch 256 via 16 x 16 accumulation.
+  batch_size: 16
+  gradient_accumulation_steps: 16
+  effective_batch_size: 256
+  epochs: null
+  max_steps: 20000 # Paper's 5k steps at batch 1024, exposure-matched to batch 256.
+  num_workers: 4
+  learning_rate: 0.004 # Inferred linear scaling from C.2: 0.016 @1024, 0.008 @512.
+  scheduler: cosine
+  weight_decay: 0.00001
+  momentum: 0.9
+  nesterov: true # Explicit in the official repo's SGD optimizer.
+  label_smoothing: 0.0 # Official repo default for this code path; C.2 does not specify it.
+  gradient_clip_norm: 5.0 # Official repo default; C.2 does not specify another value.
+  freeze_batch_norm_statistics: true
+
+sam:
+  rho: 0.05
+
+pretrained_weights: IMAGENET1K_V1 # T4-friendly B0 substitute; paper fine-tunes EffNet-B7/L2.
+replace_classifier: true
+image:
+  crop_size: 224
+  eval_center_crop_fraction: 0.875
+  interpolation: bicubic
+  normalization: imagenet
+  train_preprocessing: sam_center_crop_then_resize_no_augmentation
+  eval_preprocessing: sam_center_crop_then_resize
+
+# C.2 reports no augmentation; train/validation/test share deterministic
+# center-crop, bicubic resize, and ImageNet normalization preprocessing.
+# Batch-256 LR, B0 weights/resolution, and 20k-step exposure match are adaptations.
+
+output_root: outputs
