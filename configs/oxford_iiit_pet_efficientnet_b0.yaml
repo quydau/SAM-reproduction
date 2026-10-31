@@ -23,8 +23,8 @@ training:
   weight_decay: 0.00001
   momentum: 0.9
   nesterov: true # Explicit in the official repo's SGD optimizer.
-  label_smoothing: 0.0 # Official repo default for this code path; C.2 does not specify it.
-  gradient_clip_norm: 5.0 # Official repo default; C.2 does not specify another value.
+  label_smoothing: 0.1 # Matches the official SAM README's EfficientNet fine-tuning command.
+  gradient_clip_norm: 1.0 # Matches --gradient_clipping 1.0 in that command.
   freeze_batch_norm_statistics: true
 
 sam:

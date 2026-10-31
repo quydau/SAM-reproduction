@@ -65,7 +65,7 @@ class SAM(Optimizer):
     @torch.no_grad()
     def first_step(self, zero_grad: bool = False) -> None:
         """Move weights to ``w + e(w)`` using gradients at ``w``."""
-        self._add_l2_gradient()
+        self.add_l2_gradient()
         grad_norm = self._grad_norm()
         for group in self.param_groups:
             # Match JAX dual_vector for non-zero gradients. Keep the zero
@@ -88,11 +88,13 @@ class SAM(Optimizer):
             self.zero_grad()
 
     @torch.no_grad()
-    def second_step(self, zero_grad: bool = False) -> None:
+    def second_step(self, zero_grad: bool = False,
+                    *, l2_already_added: bool = False) -> None:
         """Restore ``w`` and update it with gradients at ``w + e(w)``."""
         # At this point parameters are still perturbed, matching the JAX
         # second loss evaluation at ``noised_model``.
-        self._add_l2_gradient()
+        if not l2_already_added:
+            self.add_l2_gradient()
         for group in self.param_groups:
             for parameter in group["params"]:
                 if parameter.grad is None:
@@ -104,7 +106,7 @@ class SAM(Optimizer):
             self.zero_grad()
 
     @torch.no_grad()
-    def _add_l2_gradient(self) -> None:
+    def add_l2_gradient(self) -> None:
         for group in self.param_groups:
             coefficient = group["l2_reg"]
             if coefficient == 0.0:

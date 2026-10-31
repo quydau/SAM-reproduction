@@ -6,7 +6,7 @@ from pathlib import Path
 from sam_pytorch.datasets import (Flowers102DataModule,
                                   OxfordIIITPetDataModule)
 from sam_pytorch.models import create_model
-from sam_pytorch.training_utils import fit, load_config, seed_everything
+from sam_pytorch.trainer import load_config, seed_everything, train
 
 
 def main() -> None:
@@ -52,7 +52,7 @@ def main() -> None:
     run_dir = (Path(config.get("output_root", "outputs"))
                / config["dataset"] / config["model"] / args.optimizer
                / f"seed_{config['seed']}")
-    fit(model, data, config, args.optimizer, run_dir)
+    train(model, data, config, args.optimizer, run_dir)
 
 
 if __name__ == "__main__":
