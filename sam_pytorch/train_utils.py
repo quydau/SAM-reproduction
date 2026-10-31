@@ -47,7 +47,8 @@ def seed_everything(seed: int) -> None:
 
 def _masked_mean(values: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
     """Average per-example values, safely returning zero for all-padding input."""
-    weights = torch.ones_like(values) if mask is None else mask.to(values)
+    weights = (torch.ones_like(values) if mask is None else
+               mask.to(values).reshape(values.shape[0]))
     return (values * weights).sum() / weights.sum().clamp_min(1)
 
 
@@ -62,9 +63,7 @@ def error_rate_metric(
     """
     targets = labels.argmax(dim=-1) if labels.ndim == logits.ndim else labels.long()
     errors = (logits.argmax(dim=-1) != targets).to(logits.dtype)
-    weights = (torch.ones(logits.shape[0], device=logits.device, dtype=logits.dtype)
-               if mask is None else mask.to(device=logits.device, dtype=logits.dtype))
-    weights = weights.reshape(logits.shape[0])
+    weights = _metric_weights(logits, mask)
     error_rate = (errors * weights).sum() / weights.sum()
     return torch.nan_to_num(error_rate)
 
@@ -85,11 +84,22 @@ def top_k_error_rate_metric(
     targets = targets.reshape(-1, 1)
     top_k_preds = torch.argsort(logits, dim=-1)[..., -k:]
     hits = top_k_preds.eq(targets).any(dim=-1).to(logits.dtype)
-    weights = (torch.ones(logits.shape[0], device=logits.device, dtype=logits.dtype)
-               if mask is None else mask.to(device=logits.device, dtype=logits.dtype))
-    weights = weights.reshape(logits.shape[0])
+    weights = _metric_weights(logits, mask)
     error_rate = 1 - (hits * weights).sum() / weights.sum()
     return torch.nan_to_num(error_rate)
+
+
+def _metric_weights(logits: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
+    """Return one metric weight per example, matching the batch dimension."""
+    if mask is None:
+        weights = torch.ones(logits.shape[0], device=logits.device, dtype=logits.dtype)
+    else:
+        weights = mask.to(device=logits.device, dtype=logits.dtype)
+    return weights.reshape(logits.shape[0])
+
+
+def _top_k_metric_name(top_k: int) -> str:
+    return "top_5_error_rate" if top_k == 5 else f"top_{top_k}_error_rate"
 
 
 def make_learning_rate_scheduler(
@@ -100,6 +110,8 @@ def make_learning_rate_scheduler(
     batch_size: int,
     *,
     warmup_epochs: float = 0,
+    steps_per_epoch_override: Optional[int] = None,
+    total_steps_override: Optional[int] = None,
 ) -> Optional[torch.optim.lr_scheduler.LRScheduler]:
     """Build a per-update scheduler from PyTorch's scheduler implementations.
 
@@ -118,10 +130,12 @@ def make_learning_rate_scheduler(
     scheduler_optimizer = optimizer.base_optimizer if isinstance(optimizer, SAM) else optimizer
     # The source uses floor division (and, for its single-host setup, host_count
     # is one). A zero-update epoch cannot define either schedule's epoch scale.
-    steps_per_epoch = num_training_obs // batch_size
+    steps_per_epoch = (steps_per_epoch_override if steps_per_epoch_override is not None
+                       else num_training_obs // batch_size)
     if steps_per_epoch == 0:
         raise ValueError("num_training_obs must be at least batch_size")
-    total_steps = num_epochs * steps_per_epoch
+    total_steps = (total_steps_override if total_steps_override is not None
+                   else num_epochs * steps_per_epoch)
     warmup_steps = min(total_steps - 1, max(0, int(warmup_epochs * steps_per_epoch)))
     decay_steps = max(1, total_steps - warmup_steps)
     if kind == "cosine":
@@ -136,10 +150,11 @@ def make_learning_rate_scheduler(
     if not warmup_steps:
         return decay
     warmup = torch.optim.lr_scheduler.LinearLR(
-        scheduler_optimizer, start_factor=0.0, end_factor=1.0, total_iters=warmup_steps
+        scheduler_optimizer, start_factor=1e-8, end_factor=1.0,
+        total_iters=warmup_steps
     )
     return torch.optim.lr_scheduler.SequentialLR(
-        optimizer, schedulers=[warmup, decay], milestones=[warmup_steps]
+        scheduler_optimizer, schedulers=[warmup, decay], milestones=[warmup_steps]
     )
 
 
@@ -186,17 +201,30 @@ def _loss(model, images, labels, mask, label_smoothing, l2_reg, *, include_l2=Tr
 
 
 def _get_rng_state():
-    """Capture default CPU and CUDA RNG states for replaying a SAM pass."""
+    """Capture device RNG states for replaying a SAM pass."""
     cuda_states = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
-    return torch.get_rng_state(), cuda_states
+    mps_state = (torch.mps.get_rng_state()
+                 if torch.backends.mps.is_available() else None)
+    return torch.get_rng_state(), cuda_states, mps_state
 
 
 def _set_rng_state(state) -> None:
-    """Restore default CPU and CUDA RNG states."""
-    cpu_state, cuda_states = state
+    """Restore default CPU, CUDA, and MPS RNG states."""
+    cpu_state, cuda_states, mps_state = state
     torch.set_rng_state(cpu_state)
     if cuda_states is not None:
         torch.cuda.set_rng_state_all(cuda_states)
+    if mps_state is not None:
+        torch.mps.set_rng_state(mps_state)
+
+
+def _get_mps_rng_state():
+    return torch.mps.get_rng_state() if torch.backends.mps.is_available() else None
+
+
+def _set_mps_rng_state(state) -> None:
+    if state is not None and torch.backends.mps.is_available():
+        torch.mps.set_rng_state(state.cpu())
 
 
 def train_step(
@@ -228,15 +256,19 @@ def train_step(
     # Replay the first pass's RNG state for the perturbed pass, then leave the
     # global generators advanced by one pass, as they would be without replay.
     first_pass_rng = _get_rng_state() if is_sam else None
-    loss, logits = _loss(model, images, labels, mask, label_smoothing,
-                         0.0 if is_sam else l2_reg)
+    loss, logits = _loss(
+        model, images, labels, mask, label_smoothing, 0.0 if is_sam else l2_reg
+    )
     loss.backward()
 
     if is_sam:
         rng_after_first_pass = _get_rng_state()
         optimizer.first_step(zero_grad=True)
-        buffers = ([buffer.detach().clone() for buffer in model.buffers()]
-                   if preserve_first_pass_buffers else None)
+        buffers = (
+            [buffer.detach().clone() for buffer in model.buffers()]
+            if preserve_first_pass_buffers
+            else None
+        )
         _set_rng_state(first_pass_rng)
         loss, logits = _loss(model, images, labels, mask, label_smoothing, 0.0)
         loss.backward()
@@ -255,20 +287,30 @@ def train_step(
     else:
         optimizer.step()
 
-    train_loss = float(_classification_loss(
-        logits.detach(), labels, mask, label_smoothing
-    ))
+    train_loss = float(
+        _classification_loss(logits.detach(), labels, mask, label_smoothing)
+    )
     train_error = float(error_rate_metric(logits.detach(), labels, mask))
     param_norms = [p.detach().norm(2) for p in model.parameters()]
     param_norm = float(torch.linalg.vector_norm(torch.stack(param_norms))) if param_norms else 0.0
     lr = float(optimizer.param_groups[0]["lr"])
-    return {"train_loss": train_loss, "train_error_rate": train_error,
-            "gradient_norm": grad_norm, "param_norm": param_norm, "learning_rate": lr}
+    return {
+        "train_loss": train_loss,
+        "train_error_rate": train_error,
+        "gradient_norm": grad_norm,
+        "param_norm": param_norm,
+        "learning_rate": lr,
+    }
 
 
 @torch.no_grad()
-def eval_step(model: nn.Module, batch, *, label_smoothing: float = 0.0,
-              top_k: Optional[int] = None) -> dict[str, float]:
+def eval_step(
+    model: nn.Module,
+    batch,
+    *,
+    label_smoothing: float = 0.0,
+    top_k: Optional[int] = None,
+) -> dict[str, float]:
     """Evaluate one batch and return metric sums over its valid samples."""
     was_training = model.training
     model.eval()
@@ -282,42 +324,56 @@ def eval_step(model: nn.Module, batch, *, label_smoothing: float = 0.0,
             "error_rate": float(error_rate_metric(logits, labels, mask) * count),
         }
         if top_k is not None:
-            key = "top_5_error_rate" if top_k == 5 else f"top_{top_k}_error_rate"
-            result[key] = float(top_k_error_rate_metric(logits, labels, top_k, mask) * count)
+            key = _top_k_metric_name(top_k)
+            result[key] = float(
+                top_k_error_rate_metric(logits, labels, top_k, mask) * count
+            )
         return result
     finally:
         model.train(was_training)
 
 
 @torch.no_grad()
-def eval_on_dataset(model: nn.Module, batches, *, label_smoothing: float = 0.0,
-                    top_k: Optional[int] = None) -> dict[str, float]:
+def eval_on_dataset(
+    model: nn.Module,
+    batches,
+    *,
+    label_smoothing: float = 0.0,
+    top_k: Optional[int] = None,
+) -> dict[str, float]:
     """Aggregate batch metric sums by valid sample count, including short batches."""
     was_training = model.training
     model.eval()
     totals = {"loss": 0.0, "error_rate": 0.0}
     if top_k is not None:
-        key = "top_5_error_rate" if top_k == 5 else f"top_{top_k}_error_rate"
-        totals[key] = 0.0
+        totals[_top_k_metric_name(top_k)] = 0.0
     count = 0.0
     try:
         for batch in batches:
             images, _, mask = _unpack_batch(batch)
             count += images.shape[0] if mask is None else float(mask.sum())
-            for name, value in eval_step(model, batch, label_smoothing=label_smoothing,
-                                         top_k=top_k).items():
+            batch_metrics = eval_step(
+                model, batch, label_smoothing=label_smoothing, top_k=top_k
+            )
+            for name, value in batch_metrics.items():
                 totals[name] = totals.get(name, 0.0) + value
     finally:
         model.train(was_training)
     return {name: value / max(count, 1.0) for name, value in totals.items()}
 
 
-def train_for_one_epoch(model, optimizer, batches, *, step: int = 0,
-                        scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
-                        summary_writer=None,
-                        max_steps: Optional[int] = None,
-                        freeze_batch_norm_statistics: bool = False,
-                        **step_kwargs):
+def train_for_one_epoch(
+    model,
+    optimizer,
+    batches,
+    *,
+    step: int = 0,
+    scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
+    summary_writer=None,
+    max_steps: Optional[int] = None,
+    freeze_batch_norm_statistics: bool = False,
+    **step_kwargs,
+):
     """Train for one epoch, average batch metrics, and optionally log them.
 
     ``step`` is the current global update count. The scheduler advances once
@@ -331,8 +387,10 @@ def train_for_one_epoch(model, optimizer, batches, *, step: int = 0,
     start_time = time.time()
     totals: dict[str, float] = {}
     count = 0
+    last_learning_rate = None
     for batch in islice(batches, max_steps):
         metrics = train_step(model, optimizer, batch, **step_kwargs)
+        last_learning_rate = metrics["learning_rate"]
         if scheduler is not None:
             scheduler.step()
         for key, value in metrics.items():
@@ -340,12 +398,17 @@ def train_for_one_epoch(model, optimizer, batches, *, step: int = 0,
         count += 1
         step += 1
     averages = {key: value / max(count, 1) for key, value in totals.items()}
+    if last_learning_rate is not None:
+        averages["learning_rate"] = last_learning_rate
     if summary_writer is not None:
         for name, value in averages.items():
             summary_writer.add_scalar(name, value, step)
         summary_writer.flush()
-    logging.info("Whole training epoch done in %.2f seconds (%d steps)",
-                 time.time() - start_time, count)
+    logging.info(
+        "Whole training epoch done in %.2f seconds (%d steps)",
+        time.time() - start_time,
+        count,
+    )
     return averages, step
 
 
@@ -383,42 +446,69 @@ def _classification_results(model, batches, class_names, label_smoothing=0.0):
             "error": 1.0 - accuracy}, report
 
 
+def _make_optimizer(model, optimizer_name: str, config: dict, training: dict):
+    """Create the configured optimizer with the reference's L2 handling."""
+    from sam_pytorch.optimizers import make_sgd
+
+    optimizer_args = {
+        "lr": float(training["learning_rate"]),
+        "momentum": float(training.get("momentum", 0.9)),
+        # Weight decay is applied as an L2 loss penalty in train_step.
+        "weight_decay": 0.0,
+        "nesterov": bool(training.get("nesterov", True)),
+    }
+    if optimizer_name == "sam":
+        rho = float(config.get("sam", {}).get("rho", 0.05))
+        if rho == 0:
+            return make_sgd(model.parameters(), **optimizer_args)
+        return SAM(
+            model.parameters(),
+            base_optimizer=torch.optim.SGD,
+            rho=rho,
+            **optimizer_args,
+        )
+    if optimizer_name == "sgd":
+        return make_sgd(model.parameters(), **optimizer_args)
+    raise ValueError(f"Unsupported optimizer: {optimizer_name}")
+
+
+def _write_epoch_metrics(run_dir: Path, history: list[dict]) -> None:
+    with (run_dir / "metrics.csv").open("w", newline="") as csv_file:
+        fieldnames = list(history[-1])
+        normalized_history = [
+            {key: row.get(key, "") for key in fieldnames} for row in history
+        ]
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(normalized_history)
+
+
 def train(model: nn.Module, data, config: dict, optimizer_name: str,
           run_dir: str | Path) -> dict:
     """Train with automatic epoch checkpoint recovery and write run reports."""
-    from sam_pytorch.optimizers import make_sgd
-
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     training = config["training"]
     device = torch.device("cuda" if torch.cuda.is_available() else
                           "mps" if torch.backends.mps.is_available() else "cpu")
     model.to(device)
-    optimizer_args = {
-        "lr": float(training["learning_rate"]),
-        "momentum": float(training.get("momentum", 0.0)),
-        # The reference implements weight decay as an L2 loss penalty in train_step.
-        "weight_decay": 0.0,
-        "nesterov": bool(training.get("nesterov", False)),
-    }
-    if optimizer_name == "sam":
-        optimizer = SAM(model.parameters(), base_optimizer=torch.optim.SGD,
-                        rho=float(config.get("sam", {}).get("rho", 0.05)), **optimizer_args)
-    elif optimizer_name == "sgd":
-        optimizer = make_sgd(model.parameters(), **optimizer_args)
-    else:
-        raise ValueError(f"Unsupported optimizer: {optimizer_name}")
+    optimizer = _make_optimizer(model, optimizer_name, config, training)
 
     epochs, max_steps = training.get("epochs"), training.get("max_steps")
     if (epochs is None) == (max_steps is None):
         raise ValueError("Set exactly one of training.epochs or training.max_steps")
     batch_size = int(training["batch_size"])
-    steps_per_epoch = max(1, data.num_training_obs // batch_size)
+    train_loader_steps = len(data.get_train_loader(seed=int(config.get("seed", 1)) + 1))
+    steps_per_epoch = max(1, train_loader_steps)
     epochs = int(epochs) if epochs is not None else (int(max_steps) + steps_per_epoch - 1) // steps_per_epoch
+    scheduler_steps = (int(max_steps) if max_steps is not None
+                       else epochs * steps_per_epoch)
     scheduler = make_learning_rate_scheduler(
         optimizer, training.get("scheduler", "constant"), epochs,
         data.num_training_obs, batch_size,
-        warmup_epochs=float(training.get("warmup_epochs", 0)))
+        warmup_epochs=float(training.get("warmup_epochs", 0)),
+        steps_per_epoch_override=steps_per_epoch,
+        total_steps_override=scheduler_steps)
 
     last_path, best_path = run_dir / "last.pt", run_dir / "best.pt"
     history, started_at, elapsed_before, epoch_seconds = [], datetime.now(timezone.utc).isoformat(), 0.0, 0.0
@@ -427,14 +517,19 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
         state = torch.load(last_path, map_location=device, weights_only=False)
         model.load_state_dict(state["model"])
         optimizer.load_state_dict(state["optimizer"])
+        if (isinstance(optimizer, SAM) and
+                state.get("base_optimizer") is not None):
+            optimizer.base_optimizer.load_state_dict(state["base_optimizer"])
+            optimizer.param_groups = optimizer.base_optimizer.param_groups
         if scheduler is not None and state.get("scheduler") is not None:
             scheduler.load_state_dict(state["scheduler"])
         if "torch_rng" in state:
-            torch.set_rng_state(state["torch_rng"])
+            torch.set_rng_state(state["torch_rng"].cpu())
             random.setstate(state["python_rng"])
             np.random.set_state(state["numpy_rng"])
         if torch.cuda.is_available() and state.get("cuda_rng") is not None:
-            torch.cuda.set_rng_state_all(state["cuda_rng"])
+            torch.cuda.set_rng_state_all([rng.cpu() for rng in state["cuda_rng"]])
+        _set_mps_rng_state(state.get("mps_rng"))
         if "history" in state:
             history, started_at = state["history"], state["started_at"]
             elapsed_before, epoch_seconds = state["elapsed_seconds"], state["epoch_seconds"]
@@ -480,13 +575,14 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
             model, optimizer, batches, step=step, scheduler=scheduler, max_steps=remaining,
             freeze_batch_norm_statistics=bool(training.get("freeze_batch_norm_statistics", False)),
             label_smoothing=float(training.get("label_smoothing", 0.0)),
-            l2_reg=float(training.get("weight_decay", 0.0)),
-            gradient_clip_norm=training.get("gradient_clip_norm"))
+            l2_reg=float(training.get("weight_decay", 0.001)),
+            gradient_clip_norm=training.get("gradient_clip_norm", 5.0))
         validation = eval_on_dataset(model, data.get_validation_loader(),
                                      label_smoothing=float(training.get("label_smoothing", 0.0)))
         duration = time.time() - tick
         epoch_seconds += duration
-        row = {"epoch": epoch, "step": step, "learning_rate": optimizer.param_groups[0]["lr"],
+        row = {"epoch": epoch, "step": step,
+               "learning_rate": train_metrics.get("learning_rate", optimizer.param_groups[0]["lr"]),
                "train_loss": train_metrics.get("train_loss", 0.0),
                "train_error_rate": train_metrics.get("train_error_rate", 0.0),
                "validation_loss": validation["loss"],
@@ -496,22 +592,31 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
         if row["val_error_rate"] < best_error_rate:
             best_error_rate, best_epoch = row["val_error_rate"], epoch
             _atomic_save({"model": model.state_dict(), "epoch": epoch}, best_path)
+        elapsed = elapsed_before + time.time() - session_started
         _atomic_save({
             "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+            "base_optimizer": (optimizer.base_optimizer.state_dict()
+                               if isinstance(optimizer, SAM) else None),
             "scheduler": scheduler.state_dict() if scheduler else None,
             "torch_rng": torch.get_rng_state(),
             "python_rng": random.getstate(), "numpy_rng": np.random.get_state(),
             "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-            "history": history, "started_at": started_at, "elapsed_seconds": elapsed,
+            "mps_rng": _get_mps_rng_state(),
+            "history": history, "started_at": started_at,
+            "elapsed_seconds": elapsed,
             "epoch_seconds": epoch_seconds, "best_error_rate": best_error_rate,
             "best_epoch": best_epoch, "step": step, "epoch": epoch,
         }, last_path)
         with (run_dir / "train.log").open("a") as log:
-            log.write("epoch={epoch} step={step} lr={learning_rate:.8g} train_loss={train_loss:.4f} train_error_rate={train_error_rate:.4f} val_loss={validation_loss:.4f} val_error_rate={val_error_rate:.4f} seconds={epoch_seconds:.1f}\n".format(**row))
-        with (run_dir / "metrics.csv").open("w", newline="") as csv_file:
-            writer = csv.DictWriter(csv_file, fieldnames=list(history[0]))
-            writer.writeheader()
-            writer.writerows(history)
+            log.write(
+                "epoch={epoch} step={step} lr={learning_rate:.8g} "
+                "train_loss={train_loss:.4f} "
+                "train_error_rate={train_error_rate:.4f} "
+                "val_loss={validation_loss:.4f} "
+                "val_error_rate={val_error_rate:.4f} "
+                "seconds={epoch_seconds:.1f}\n".format(**row)
+            )
+        _write_epoch_metrics(run_dir, history)
         logging.info("epoch=%d step=%d val_error_rate=%.4f", epoch, step, row["val_error_rate"])
         if max_steps is not None and step >= int(max_steps):
             break
