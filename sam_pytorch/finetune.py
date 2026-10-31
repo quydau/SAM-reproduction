@@ -6,7 +6,7 @@ from pathlib import Path
 from sam_pytorch.datasets import (Flowers102DataModule,
                                   OxfordIIITPetDataModule)
 from sam_pytorch.models import create_model
-from sam_pytorch.trainer import load_config, seed_everything, train
+from sam_pytorch.train_utils import load_config, seed_everything, train
 
 
 def main() -> None:

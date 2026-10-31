@@ -5,7 +5,7 @@ from pathlib import Path
 
 from sam_pytorch.datasets import CIFAR10DataModule
 from sam_pytorch.models import create_model
-from sam_pytorch.trainer import load_config, seed_everything, train
+from sam_pytorch.train_utils import load_config, seed_everything, train
 
 
 def main() -> None:
