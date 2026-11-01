@@ -10,7 +10,7 @@ from torch.utils.data import (ConcatDataset, DataLoader, Dataset, Subset,
 from torchvision import transforms
 from torchvision.transforms import functional as TF
 from torchvision.transforms import InterpolationMode
-from torchvision.datasets import CIFAR10
+from torchvision.datasets import CIFAR10, CIFAR100
 from PIL import Image
 
 from sam_pytorch.augmentation import CIFAR10Augmentation
@@ -44,6 +44,9 @@ class CIFAR10DataModule:
     NUM_CLASSES = 10
     TRAIN_SIZE = 45_000
     VALIDATION_SIZE = 5_000
+    DATASET_CLS = CIFAR10
+    MEAN = CIFAR10Augmentation.MEAN
+    STD = CIFAR10Augmentation.STD
 
     def __init__(self, data_root: str | Path, batch_size: int,
                  augmentation: str = "basic", validation_seed: int = 1,
@@ -66,20 +69,22 @@ class CIFAR10DataModule:
         self.augmentation = CIFAR10Augmentation(
             augmentation, crop_padding=crop_padding,
             cutout_length=cutout_length,
-            horizontal_flip_probability=horizontal_flip_probability)
+            horizontal_flip_probability=horizontal_flip_probability,
+            mean=self.MEAN, std=self.STD)
+        plain = CIFAR10Augmentation("none", mean=self.MEAN, std=self.STD)
 
         # Hai dataset train cùng trỏ tới 50.000 ảnh, nhưng dùng transform khác nhau.
         # Bản augmented dành cho train; bản plain dành cho validation/đánh giá công bằng.
-        self._train_augmented = CIFAR10(
+        self._train_augmented = self.DATASET_CLS(
             root=str(self.data_root), train=True, download=True,
             transform=self.augmentation.image_transform)
-        self._train_plain = CIFAR10(
+        self._train_plain = self.DATASET_CLS(
             root=str(self.data_root), train=True, download=False,
-            transform=CIFAR10Augmentation("none").image_transform)
+            transform=plain.image_transform)
         # Test chính thức (10.000 ảnh) luôn được giữ riêng và không augmentation.
-        self._test = CIFAR10(
+        self._test = self.DATASET_CLS(
             root=str(self.data_root), train=False, download=True,
-            transform=CIFAR10Augmentation("none").image_transform)
+            transform=plain.image_transform)
         self.class_names = list(self._test.classes)
 
         # Tạo phép chia có thể tái lập: cùng seed sẽ cho cùng train/validation indices.
@@ -130,6 +135,15 @@ class CIFAR10DataModule:
         return self._loader(
             self._test, shuffle=False, drop_last=False, seed=0,
             batch_size=min(32, self.batch_size))
+
+
+class CIFAR100DataModule(CIFAR10DataModule):
+    """CIFAR-100 with the same 45k/5k split and loaders as CIFAR-10."""
+
+    NUM_CLASSES = 100
+    DATASET_CLS = CIFAR100
+    MEAN = CIFAR10Augmentation.CIFAR100_MEAN
+    STD = CIFAR10Augmentation.CIFAR100_STD
 
 
 class _ImageNetDataModule:
