@@ -1,0 +1,45 @@
+experiment: cifar100_wrn16x8
+dataset: cifar100
+data_root: data
+model: wrn16x8
+num_classes: 100
+augmentation: basic # Run separately as basic, cutout, and autoaugment conditions.
+optimizers: [sgd, sam]
+seed: 1
+
+split:
+  validation_fraction: 0.1
+  seed: 1
+
+training:
+  epochs: 200
+  # RTX 3090 (24 GB): WRN-16-8 fits batch 256 in one pass, so no accumulation
+  # is needed and BatchNorm sees the full paper batch of 256.
+  batch_size: 256
+  gradient_accumulation_steps: 1
+  effective_batch_size: 256
+  num_workers: 8
+  learning_rate: 0.1
+  scheduler: cosine
+  weight_decay: 0.0005
+  momentum: 0.9
+  nesterov: true # Explicit in the official repo's SGD optimizer.
+  label_smoothing: 0.0 # Official repo default; smoothing branch is skipped at zero.
+  gradient_clip_norm: 5.0 # Official repo default, applied after gradient synchronization.
+
+sam:
+  rho: 0.1 # Paper Table 6: CIFAR-100 uses rho 0.1 (CIFAR-10 uses 0.05) for WRN-28-10, 200 epochs.
+
+augmentation_params:
+  crop_padding: 4
+  horizontal_flip_probability: 0.5
+  cutout_length: 16
+  cutout_mask_per_image: false # Match old repo: one spatial mask shared by batch.
+  cutout_after_normalization: true
+  autoaugment_policy: cifar10 # Official repo reuses the CIFAR-10 policy for CIFAR-100.
+  autoaugment_then_basic: true # Apply CIFAR AutoAugment, then flip/crop as in old repo.
+
+# Direct from paper: 200 epochs, LR 0.1, WD 5e-4, rho 0.1 (paper uses WRN-28-10; WRN-16-8 here is a lighter substitute).
+# Batch 256 and cosine are also paper/repo settings. Full batch 256 without accumulation is tuned for RTX 3090.
+
+output_root: outputs

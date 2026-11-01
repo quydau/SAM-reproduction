@@ -1,4 +1,4 @@
-"""CIFAR-10 image and batch augmentations implemented with torchvision."""
+"""CIFAR-10/100 image and batch augmentations implemented with torchvision."""
 
 from collections.abc import Callable
 
@@ -24,13 +24,17 @@ class CIFAR10Augmentation:
 
     MEAN = (0.49139968, 0.48215841, 0.44653091)
     STD = (0.24703223, 0.24348513, 0.26158784)
+    # CIFAR-100 channel statistics (train set).
+    CIFAR100_MEAN = (0.50707516, 0.48654887, 0.44091784)
+    CIFAR100_STD = (0.26733429, 0.25643846, 0.27615047)
     OPTIONS = ("none", "basic", "cutout", "autoaugment")
 
     def __init__(self, name: str, crop_padding: int = 4,
                  cutout_length: int = 16,
-                 horizontal_flip_probability: float = 0.5):
+                 horizontal_flip_probability: float = 0.5,
+                 mean: tuple = MEAN, std: tuple = STD):
         if name not in self.OPTIONS:
-            raise ValueError(f"Unknown CIFAR-10 augmentation: {name}")
+            raise ValueError(f"Unknown CIFAR augmentation: {name}")
         if (crop_padding < 0 or cutout_length < 1
                 or not 0.0 <= horizontal_flip_probability <= 1.0):
             raise ValueError("crop_padding must be >= 0 and cutout_length >= 1")
@@ -54,7 +58,7 @@ class CIFAR10Augmentation:
 
         # Convert and normalize only after all per-image transforms.
         ops.extend((transforms.ToTensor(),
-                    transforms.Normalize(self.MEAN, self.STD)))
+                    transforms.Normalize(mean, std)))
         self.image_transform = transforms.Compose(ops)
 
     def apply_cutout(self, images: Tensor) -> Tensor:

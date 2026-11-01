@@ -8,7 +8,7 @@ SAM thực hiện cập nhật SGD trên loss tại các trọng số đã bị 
 
 Các nhóm thực nghiệm theo kế hoạch:
 
-- CIFAR-10, WRN-16-8 huấn luyện từ đầu với `basic`, `cutout`, `autoaugment`.
+- CIFAR-10 và CIFAR-100, WRN-16-8 huấn luyện từ đầu với `basic`, `cutout`, `autoaugment`.
 - Fine-tune EfficientNet-B0 trên Flowers102 và Oxford-IIIT Pet.
 - Ba seed ghép cặp giữa SGD và SAM cho mỗi điều kiện; chọn checkpoint trên validation rồi đánh giá test một lần.
 
@@ -40,6 +40,7 @@ python -m sam_pytorch.train --config configs/cifar10_wrn16x8.yaml --augmentation
 python -m sam_pytorch.train --config configs/cifar10_wrn16x8.yaml --augmentation basic --optimizer sam --seed 1
 python -m sam_pytorch.train --config configs/cifar10_wrn16x8.yaml --augmentation cutout --optimizer sam --seed 2
 python -m sam_pytorch.train --config configs/cifar10_wrn16x8.yaml --augmentation autoaugment --optimizer sgd --seed 3
+python -m sam_pytorch.train --config configs/cifar100_wrn16x8.yaml --augmentation basic --optimizer sam --seed 1
 python -m sam_pytorch.finetune --config configs/flowers102_efficientnet_b0.yaml --optimizer sgd --seed 1
 python -m sam_pytorch.finetune --config configs/oxford_iiit_pet_efficientnet_b0.yaml --optimizer sam --seed 2
 

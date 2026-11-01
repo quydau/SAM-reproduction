@@ -1,5 +1,6 @@
 """Dataset splits and PyTorch data loaders for the experiments."""
 
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -9,7 +10,8 @@ from torch.utils.data import (ConcatDataset, DataLoader, Dataset, Subset,
 from torchvision import transforms
 from torchvision.transforms import functional as TF
 from torchvision.transforms import InterpolationMode
-from torchvision.datasets import CIFAR10, Flowers102, OxfordIIITPet
+from torchvision.datasets import CIFAR10, CIFAR100
+from PIL import Image
 
 from sam_pytorch.augmentation import CIFAR10Augmentation
 
@@ -79,6 +81,9 @@ class CIFAR10DataModule:
     NUM_CLASSES = 10
     TRAIN_SIZE = 45_000
     VALIDATION_SIZE = 5_000
+    DATASET_CLS = CIFAR10
+    MEAN = CIFAR10Augmentation.MEAN
+    STD = CIFAR10Augmentation.STD
 
     def __init__(self, data_root: str | Path, batch_size: int,
                  augmentation: str = "basic", validation_seed: int = 1,
@@ -106,20 +111,22 @@ class CIFAR10DataModule:
         self.augmentation = CIFAR10Augmentation(
             augmentation, crop_padding=crop_padding,
             cutout_length=cutout_length,
-            horizontal_flip_probability=horizontal_flip_probability)
+            horizontal_flip_probability=horizontal_flip_probability,
+            mean=self.MEAN, std=self.STD)
+        plain = CIFAR10Augmentation("none", mean=self.MEAN, std=self.STD)
 
         # Hai dataset train cùng trỏ tới 50.000 ảnh, nhưng dùng transform khác nhau.
         # Bản augmented dành cho train; bản plain dành cho validation/đánh giá công bằng.
-        self._train_augmented = CIFAR10(
+        self._train_augmented = self.DATASET_CLS(
             root=str(self.data_root), train=True, download=True,
             transform=self.augmentation.image_transform)
-        self._train_plain = CIFAR10(
+        self._train_plain = self.DATASET_CLS(
             root=str(self.data_root), train=True, download=False,
-            transform=CIFAR10Augmentation("none").image_transform)
+            transform=plain.image_transform)
         # Test chính thức (10.000 ảnh) luôn được giữ riêng và không augmentation.
-        self._test = CIFAR10(
+        self._test = self.DATASET_CLS(
             root=str(self.data_root), train=False, download=True,
-            transform=CIFAR10Augmentation("none").image_transform)
+            transform=plain.image_transform)
         self.class_names = list(self._test.classes)
 
         # Tạo phép chia có thể tái lập: cùng seed sẽ cho cùng train/validation indices.
@@ -195,6 +202,15 @@ class CIFAR10DataModule:
         return self._loader(
             self._test, shuffle=False, drop_last=False, seed=0,
             batch_size=min(32, self.batch_size))
+
+
+class CIFAR100DataModule(CIFAR10DataModule):
+    """CIFAR-100 with the same 45k/5k split and loaders as CIFAR-10."""
+
+    NUM_CLASSES = 100
+    DATASET_CLS = CIFAR100
+    MEAN = CIFAR10Augmentation.CIFAR100_MEAN
+    STD = CIFAR10Augmentation.CIFAR100_STD
 
 
 class _ImageNetDataModule:
@@ -318,86 +334,131 @@ class _SAMCenterCrop:
             interpolation=InterpolationMode.BICUBIC)
 
 
-def _dataset_labels(dataset: Dataset, *, one_based: bool = False) -> list[int]:
-    """Đọc nhãn từng mẫu từ dataset torchvision thành danh sách số nguyên.
+class _HFImageDataset(Dataset):
+    """Ảnh từ một split parquet trên Hugging Face, cache thành file trên đĩa.
 
-    Nếu ``one_based=True``, trừ 1 để đổi nhãn bắt đầu từ 1 sang chỉ số từ 0.
+    Lần đầu, các shard parquet được tải về rồi giải từng ảnh ra
+    ``cache_dir`` (giữ nguyên byte JPEG/PNG của mirror) cùng ``labels.json``;
+    các lần sau chỉ đọc cache. Nhãn là chỉ số lớp 0-based có sẵn trong parquet.
     """
-    labels = getattr(dataset, "_labels", None)
-    if labels is None:
-        labels = getattr(dataset, "targets", None)
-    if labels is None:
-        raise RuntimeError(
-            f"Cannot find labels on torchvision dataset {type(dataset).__name__}")
-    result = [int(label) for label in labels]
-    return [label - 1 for label in result] if one_based else result
+
+    def __init__(self, repo_id: str, parquet_files: list[str],
+                 cache_dir: Path, transform=None):
+        self.cache_dir = Path(cache_dir)
+        self.transform = transform
+        labels_file = self.cache_dir / "labels.json"
+        if not labels_file.exists():
+            self._extract(repo_id, parquet_files)
+        meta = json.loads(labels_file.read_text())
+        if "class_names" not in meta:
+            # Cache cũ chưa lưu tên lớp: lấy một lần rồi ghi lại để lần sau offline.
+            meta["class_names"] = _hf_label_names(repo_id, parquet_files[0])
+            labels_file.write_text(json.dumps(meta))
+        self._labels: list[int] = meta["labels"]
+        self._files: list[str] = meta["files"]
+        self.class_names: list[str] = meta["class_names"]
+
+    def _extract(self, repo_id: str, parquet_files: list[str]) -> None:
+        # Import tại chỗ để chỉ cần các thư viện này khi dùng nguồn Hugging Face.
+        import pyarrow.parquet as pq
+        from huggingface_hub import hf_hub_download
+
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        labels, files = [], []
+        for name in parquet_files:
+            path = hf_hub_download(repo_id, name, repo_type="dataset")
+            for batch in pq.ParquetFile(path).iter_batches(batch_size=256):
+                for row in batch.to_pylist():
+                    data = row["image"]["bytes"]
+                    ext = "png" if data[:4] == b"\x89PNG" else "jpg"
+                    file_name = f"{len(files):05d}.{ext}"
+                    (self.cache_dir / file_name).write_bytes(data)
+                    files.append(file_name)
+                    labels.append(int(row["label"]))
+        # Ghi labels.json cuối cùng để cache dở dang không bị coi là hợp lệ.
+        (self.cache_dir / "labels.json").write_text(
+            json.dumps({"labels": labels, "files": files,
+                        "class_names": _hf_label_names(repo_id,
+                                                       parquet_files[0])}))
+
+    def __len__(self) -> int:
+        return len(self._files)
+
+    def __getitem__(self, index: int):
+        with Image.open(self.cache_dir / self._files[index]) as image:
+            image = image.convert("RGB")
+        if self.transform is not None:
+            image = self.transform(image)
+        return image, self._labels[index]
 
 
-def _flowers_label_to_zero_based(label: int) -> int:
-    """Đổi nhãn Flowers102 từ khoảng 1–102 sang chỉ số lớp 0–101."""
-    return label - 1
+def _hf_label_names(repo_id: str, parquet_file: str) -> list[str]:
+    """Đọc tên lớp (theo thứ tự chỉ số nhãn) từ metadata của dataset Hugging Face."""
+    from huggingface_hub import hf_hub_download
+    import pyarrow.parquet as pq
+    path = hf_hub_download(repo_id, parquet_file, repo_type="dataset")
+    info = json.loads(pq.ParquetFile(path).schema_arrow.metadata[b"huggingface"])
+    return info["info"]["features"]["label"]["names"]
 
 
 class Flowers102DataModule(_ImageNetDataModule):
     """Flowers102 loaders using official test data and a fixed stratified split.
 
-    The official train and validation partitions are combined as the training
-    pool, then split class-wise into train and validation (default 90/10).
-    The official test partition remains untouched for final evaluation.
-    Labels are exposed as zero-based class indices.
+    Dữ liệu lấy từ mirror Hugging Face ``dpdl-benchmark/oxford_flowers102``
+    giữ đúng split chính thức 1020/1020/6149. Train và validation chính thức
+    được gộp làm nguồn, rồi chia lại theo từng lớp (mặc định 90/10); test
+    chính thức được giữ riêng. Nhãn là chỉ số lớp 0–101 có sẵn trong parquet.
     """
 
     NUM_CLASSES = 102
+    REPO = "dpdl-benchmark/oxford_flowers102"
 
-    # Gộp train và val chính thức làm nguồn để chia lại; giữ test riêng.
-    # download=True cho phép tự tải dữ liệu nếu máy chưa có.
     def __init__(self, data_root: str | Path, batch_size: int,
                  validation_fraction: float = 0.1, split_seed: int = 1,
-                 num_workers: int = 4, pin_memory: Optional[bool] = None,
-                 download: bool = True):
+                 num_workers: int = 4, pin_memory: Optional[bool] = None):
         self.data_root = Path(data_root)
         transform = _imagenet_transform()
-        self._train_dataset = ConcatDataset([
-            Flowers102(root=str(self.data_root), split="train",
-                       transform=transform,
-                       target_transform=_flowers_label_to_zero_based,
-                       download=download),
-            Flowers102(root=str(self.data_root), split="val",
-                       transform=transform,
-                       target_transform=_flowers_label_to_zero_based,
-                       download=download),
-        ])
-        self._test_dataset = Flowers102(
-            root=str(self.data_root), split="test", transform=transform,
-            target_transform=_flowers_label_to_zero_based, download=download)
-        self._split_labels = (
-            _dataset_labels(self._train_dataset.datasets[0], one_based=True)
-            + _dataset_labels(self._train_dataset.datasets[1], one_based=True))
+        cache = self.data_root / "flowers-102-hf"
+        train, val, test = (
+            _HFImageDataset(self.REPO, files, cache / name, transform)
+            for name, files in (
+                ("train", ["data/train-00000-of-00001.parquet"]),
+                ("val", ["data/validation-00000-of-00001.parquet"]),
+                ("test", [f"data/test-{i:05d}-of-00006.parquet"
+                          for i in range(6)])))
+        self._train_dataset = ConcatDataset([train, val])
+        self._test_dataset = test
+        self._split_labels = train._labels + val._labels
         super().__init__(data_root, batch_size, validation_fraction,
                          split_seed, num_workers, pin_memory)
-        self.class_names = [str(index) for index in range(self.NUM_CLASSES)]
+        self.class_names = train.class_names
 
 
 class OxfordIIITPetDataModule(_ImageNetDataModule):
-    """Oxford-IIIT Pet loaders with a seeded stratified train/validation split."""
+    """Oxford-IIIT Pet loaders with a seeded stratified train/validation split.
+
+    Dữ liệu lấy từ ``timm/oxford-iiit-pet``: split ``train`` là trainval chính
+    thức (3680), ``test`` là test chính thức (3669). Phần trainval được chia
+    thành train/validation theo từng lớp; test được giữ riêng.
+    """
 
     NUM_CLASSES = 37
+    REPO = "timm/oxford-iiit-pet"
 
-    # Chia partition trainval thành train/validation; giữ partition test riêng.
-    # download=True cho phép tự tải dữ liệu nếu máy chưa có.
     def __init__(self, data_root: str | Path, batch_size: int,
                  validation_fraction: float = 0.1, split_seed: int = 1,
-                 num_workers: int = 4, pin_memory: Optional[bool] = None,
-                 download: bool = True):
+                 num_workers: int = 4, pin_memory: Optional[bool] = None):
         self.data_root = Path(data_root)
         transform = _imagenet_transform()
-        self._train_dataset = OxfordIIITPet(
-            root=str(self.data_root), split="trainval",
-            transform=transform, download=download)
-        self._test_dataset = OxfordIIITPet(
-            root=str(self.data_root), split="test",
-            transform=transform, download=download)
-        self._split_labels = _dataset_labels(self._train_dataset)
+        cache = self.data_root / "oxford-iiit-pet-hf"
+        self._train_dataset = _HFImageDataset(
+            self.REPO, ["data/train-00000-of-00001.parquet"],
+            cache / "trainval", transform)
+        self._test_dataset = _HFImageDataset(
+            self.REPO, ["data/test-00000-of-00001.parquet"],
+            cache / "test", transform)
+        self._split_labels = list(self._train_dataset._labels)
         super().__init__(data_root, batch_size, validation_fraction,
                          split_seed, num_workers, pin_memory)
-        self.class_names = list(self._train_dataset.classes)
+        self.class_names = [" ".join(part.title() for part in name.split("_"))
+                            for name in self._train_dataset.class_names]

@@ -3,6 +3,7 @@
 import argparse
 import copy
 import itertools
+import logging
 from pathlib import Path
 
 from sam_pytorch.datasets import (Flowers102DataModule,
@@ -55,6 +56,7 @@ def main() -> None:
     limits.add_argument("--epochs", type=int, help="Override training.epochs (quick run)")
     limits.add_argument("--steps", type=int, help="Override training.max_steps (quick run)")
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
     config = load_config(args.config)
     if config["model"] != "efficientnet_b0":
