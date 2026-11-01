@@ -3,6 +3,7 @@
 import argparse
 import copy
 import itertools
+import logging
 from pathlib import Path
 
 from sam_pytorch.datasets import CIFAR10DataModule, CIFAR100DataModule
@@ -60,6 +61,7 @@ def main() -> None:
     limits.add_argument("--epochs", type=int, help="Override training.epochs (quick run)")
     limits.add_argument("--steps", type=int, help="Override training.max_steps (quick run)")
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
     config = load_config(args.config)
     if config["dataset"] not in DATA_MODULES or config["model"] != "wrn16x8":
