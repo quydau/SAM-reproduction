@@ -3,6 +3,7 @@
 torch>=2.6,<2.11
 torchvision>=0.21,<0.26
 numpy>=1.24
-scipy>=1.10 # Required by torchvision.datasets.Flowers102 to read .mat labels.
 PyYAML>=6.0
 scikit-learn>=1.3
+huggingface_hub>=0.23 # Downloads the Flowers102 / Oxford-IIIT Pet mirrors.
+pyarrow>=15.0 # Reads the Hugging Face parquet shards.
