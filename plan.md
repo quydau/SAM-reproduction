@@ -6,7 +6,7 @@ Tài liệu này mô tả thiết kế và cách vận hành repo PyTorch dùng 
 
 Repo mới thực hiện hai nhóm thí nghiệm độc lập:
 
-1. Huấn luyện từ đầu WRN-28-10 trên CIFAR-10, với ba biến thể augmentation: `basic`, `cutout`, `autoaugment`.
+1. Huấn luyện từ đầu WRN-16-8 trên CIFAR-10, với ba biến thể augmentation: `basic`, `cutout`, `autoaugment`.
 2. Fine-tune EfficientNet-B0 pretrained trên ImageNet cho Flowers102 và Oxford-IIIT Pet.
 
 Mỗi lần gọi entry point chỉ chạy một tổ hợp dataset/augmentation, optimizer và seed. Thực hiện ba seed riêng biệt; ghép cùng seed giữa SGD và SAM để giảm nhiễu khi đối chiếu. Tổng số lần gọi:
@@ -26,11 +26,11 @@ sam-pytorch/
 ├── README.md
 ├── requirements.txt
 ├── configs/
-│   ├── cifar10_wrn28x10.yaml
+│   ├── cifar10_wrn16x8.yaml
 │   ├── flowers102_efficientnet_b0.yaml
 │   └── oxford_iiit_pet_efficientnet_b0.yaml
 ├── sam_pytorch/
-│   ├── train.py                 # WRN-28-10 trên CIFAR-10
+│   ├── train.py                 # WRN-16-8 trên CIFAR-10
 │   ├── finetune.py              # EfficientNet-B0 trên Flowers/Pet
 │   ├── datasets.py              # loader và split dữ liệu
 │   ├── augmentation.py          # các pipeline augmentation
@@ -47,7 +47,7 @@ Thiết kế giữ một package chính và một thư mục config. Hai tác v�
 
 - **`datasets.py`**: tải CIFAR-10, Flowers102 và Oxford-IIIT Pet; tạo train/validation/test split cố định và DataLoader.
 - **`augmentation.py`**: định nghĩa ba pipeline CIFAR-10 cùng preprocessing/augmentation ảnh cho EfficientNet-B0.
-- **`models.py`**: định nghĩa WRN-28-10 gọn cho ảnh CIFAR 32×32 và tạo EfficientNet-B0 từ torchvision weights đã chọn, thay classifier theo dataset. WRN-50-2 của torchvision không tương đương WRN-28-10 nên phần WRN cần module riêng.
+- **`models.py`**: định nghĩa WRN-16-8 gọn cho ảnh CIFAR 32×32 và tạo EfficientNet-B0 từ torchvision weights đã chọn, thay classifier theo dataset. WRN-50-2 của torchvision không tương đương WRN-16-8 nên phần WRN cần module riêng.
 - **`optimizers.py`**: tạo SGD và adapter SAM hai bước dựa trên `torch.optim.SGD`, gồm perturb, gradient bước hai và khôi phục tham số.
 - **`trainer.py`**: loop train/evaluate dùng chung, scheduler và lưu checkpoint.
 - **`train.py`**: entry point riêng cho huấn luyện WRN/CIFAR-10.
@@ -71,7 +71,7 @@ Mỗi run phải lưu model và **toàn bộ kết quả sau huấn luyện vào
 
 ```text
 outputs/
-├── cifar10/wrn28x10/cutout/sam/seed_1/
+├── cifar10/wrn16x8/cutout/sam/seed_1/
 │   ├── config.yaml
 │   ├── metrics.csv
 │   ├── train.log
@@ -109,7 +109,7 @@ Mỗi entry point yêu cầu `--optimizer sgd|sam`, chấp nhận `--seed` để
 | 1 | Tạo repo PyTorch riêng, khai báo dependency gọn, YAML mẫu và quy tắc đặt tên output. Giữ repo cũ nguyên trạng. | `requirements.txt` liệt kê stack JAX/Flax/TensorFlow cũ; `sam_jax/train.py` dòng 86–99 tạo output theo siêu tham số và seed. |
 | 2 | Viết loader CIFAR-10, split train/validation/test và augmentation độc lập. | `sam_jax/datasets/dataset_source.py` dòng 87–145 xử lý augmentation, batch, normalization và test loader; dòng 148–215 quy định split và normalization CIFAR. |
 | 3 | Viết loader Flowers102/Pet bằng torchvision và cố định preprocessing/split. | `sam_jax/train.py` khai báo dataset ở dòng 35–39 nhưng nhánh dispatch dòng 108–141 không hỗ trợ Flowers/Pet; `sam_jax/datasets/dataset_source_imagenet.py` dòng 279–352 tham khảo cách tách train/eval preprocessing cho ảnh lớn. |
-| 4 | Viết WRN-28-10 nhỏ bằng PyTorch và dùng torchvision EfficientNet-B0/pretrained weights. | `sam_jax/models/wide_resnet.py` dòng 182–237 mô tả các group, multiplier và classifier; `sam_jax/models/load_model.py` dòng 77–80 chọn WRN-28-10. EfficientNet JAX nằm trong `sam_jax/efficientnet/efficientnet.py`; bản mới dùng torchvision thay vì port module Flax. |
+| 4 | Viết WRN-16-8 nhỏ (thay WRN-28-10 của paper) bằng PyTorch và dùng torchvision EfficientNet-B0/pretrained weights. | `sam_jax/models/wide_resnet.py` dòng 182–237 mô tả các group, multiplier và classifier; `sam_jax/models/load_model.py` dòng 77–80 chọn WRN-16-8. EfficientNet JAX nằm trong `sam_jax/efficientnet/efficientnet.py`; bản mới dùng torchvision thay vì port module Flax. |
 | 5 | Viết SAM wrapper trên SGD, tách rõ `first_step`/`second_step` hoặc một bước cập nhật dễ đọc; xác định cách xử lý BatchNorm giữa hai forward. | `sam_jax/training_utils/flax_training.py` dòng 496–568 tính loss, gradient perturbation và nhánh SAM/SGD. |
 | 6 | **Đã triển khai lại bằng PyTorch một GPU:** `trainer.py`: `make_scheduler` (71), `train_step` (234), `train_for_one_epoch` (280), `eval_step` (88), `eval_on_dataset` (99), `train` (317). `optimizers.py`: SAM `first_step` (66), `second_step` (91), L2 gradient (109). Entry point `train.py` và `finetune.py` gọi `train`. Cả SGD và SAM áp dụng L2 trước clipping; SAM tính gradient L2 ở cả hai lượt, chỉ cập nhật BatchNorm ở lượt đầu (hoặc đóng băng theo config). Không có pmap, collective hay distributed sampler. | Đối chiếu file SAM gốc đính kèm: `get_cosine_schedule` dòng 377–396 → `make_scheduler`; `train_step` dòng 466–568 → `train_step` và `SAM.first_step`/`second_step`; `eval_step` dòng 599–625 → `eval_step`; `eval_on_dataset` dòng 627–692 → `eval_on_dataset`; `train_for_one_epoch` dòng 701–760 → `train_for_one_epoch`; `train` dòng 763–916 → `train`. Không chuyển phần phân tán. |
 | 7 | **Đã triển khai:** evaluator phân loại chọn `best.pt` bằng validation accuracy, chỉ đánh giá test một lần, ghi `classification_report`, confusion matrix có tên lớp và `test_error` vào cả `metrics.txt` và `results.txt`; lưu `metrics.csv`, `train.log`, `last.pt`, `best.pt`, `config.yaml`. Metrics CSV, báo cáo tiến độ và checkpoint được cập nhật sau mỗi epoch; epoch log đồng thời in ra màn hình và append vào file. Tự chọn CUDA/MPS/CPU để hỗ trợ GPU Apple Silicon. | `sam_jax/training_utils/flax_training.py` dòng 650–692 đánh giá dataset; dòng 170–195 lưu checkpoint; dòng 899–916 lưu tiến độ/checkpoint cuối. Repo cũ không ghi report phân loại dạng đầy đủ theo lớp, nên đây là bổ sung mới. |
@@ -122,4 +122,4 @@ Mỗi entry point yêu cầu `--optimizer sgd|sam`, chấp nhận `--seed` để
 - Chọn `best.pt` dựa trên validation metric đã quy định trước. Chỉ evaluate test sau khi hoàn tất chọn checkpoint.
 - Fine-tuning dùng cùng pretrained weights cho SGD/SAM trong một seed và cùng quy tắc freeze/unfreeze classifier/backbone.
 - Mỗi run chỉ được xem là hoàn tất khi có `config.yaml`, `results.txt`, `metrics.csv`, `best.pt` và `last.pt`; cấu trúc output cho phép chạy lại riêng một tổ hợp bị thiếu.
-- Không nhân bản chức năng đã có trong PyTorch/torchvision/sklearn. Chỉ tự viết phần kiến trúc WRN-28-10, thuật toán SAM nếu không dùng thư viện ngoài, và phần điều phối/lưu kết quả đặc thù cho thí nghiệm.
+- Không nhân bản chức năng đã có trong PyTorch/torchvision/sklearn. Chỉ tự viết phần kiến trúc WRN-16-8, thuật toán SAM nếu không dùng thư viện ngoài, và phần điều phối/lưu kết quả đặc thù cho thí nghiệm.

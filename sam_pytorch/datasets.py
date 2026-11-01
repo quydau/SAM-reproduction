@@ -192,15 +192,19 @@ class _ImageNetDataModule:
             generator=torch.Generator().manual_seed(seed),
             persistent_workers=self.num_workers > 0)
 
-    def get_train_loader(self, seed: int = 1) -> DataLoader:
+    def get_train_loader(self, seed: int = 1,
+                         drop_last: bool = True) -> DataLoader:
         """Trả DataLoader cho tập train, có xáo trộn theo ``seed``.
+
+        Mặc định bỏ batch cuối thiếu mẫu, giống ``floor(N / batch_size)`` của
+        bản JAX; truyền ``drop_last=False`` khi đánh giá toàn bộ tập train.
 
         Ảnh đã được tiền xử lý theo ImageNet; các chỉ số lấy từ lần chia cố định
         khi khởi tạo module.
         """
         return self._loader(
             Subset(self._train_dataset, self.train_indices),
-            shuffle=True, seed=seed)
+            shuffle=True, seed=seed, drop_last=drop_last)
 
     def get_validation_loader(self) -> DataLoader:
         """Trả DataLoader validation, đọc tuần tự để đánh giá ổn định."""

@@ -1,7 +1,7 @@
-experiment: cifar10_wrn28x10
+experiment: cifar10_wrn16x8
 dataset: cifar10
 data_root: data
-model: wrn28x10
+model: wrn16x8
 num_classes: 10
 augmentation: basic # Run separately as basic, cutout, and autoaugment conditions.
 optimizers: [sgd, sam]
@@ -13,12 +13,12 @@ split:
 
 training:
   epochs: 200
-  # Paper batch is 256. On a 16 GB T4, microbatch 64 x accumulation 4 is a
-  # practical estimate; BatchNorm still observes microbatches, not 256 samples.
-  batch_size: 64
-  gradient_accumulation_steps: 4
+  # RTX 3090 (24 GB): WRN-16-8 fits batch 256 in one pass, so no accumulation
+  # is needed and BatchNorm sees the full paper batch of 256.
+  batch_size: 256
+  gradient_accumulation_steps: 1
   effective_batch_size: 256
-  num_workers: 4
+  num_workers: 8
   learning_rate: 0.1
   scheduler: cosine
   weight_decay: 0.0005
@@ -39,7 +39,7 @@ augmentation_params:
   autoaugment_policy: cifar10
   autoaugment_then_basic: true # Apply CIFAR AutoAugment, then flip/crop as in old repo.
 
-# Direct from paper: 200 epochs, LR 0.1, WD 5e-4, rho 0.05 (CIFAR-10 WRN-28-10).
-# Batch 256 and cosine are also paper/repo settings. T4 microbatching is an adaptation.
+# Direct from paper: 200 epochs, LR 0.1, WD 5e-4, rho 0.05 (paper uses WRN-28-10; WRN-16-8 here is a lighter substitute).
+# Batch 256 and cosine are also paper/repo settings. Full batch 256 without accumulation is tuned for RTX 3090.
 
 output_root: outputs

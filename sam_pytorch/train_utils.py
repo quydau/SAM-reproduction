@@ -8,6 +8,7 @@ delegated to :class:`sam_pytorch.optimizers.SAM`.
 
 from __future__ import annotations
 
+import copy
 import csv
 import logging
 import os
@@ -27,7 +28,7 @@ import torchvision
 from sklearn.metrics import classification_report
 from torch import nn
 
-from sam_pytorch.optimizers import SAM
+from sam_pytorch.optimizers import SAM, ExponentialMovingAverage, RMSProp
 
 
 def load_config(path: str | Path) -> dict:
@@ -189,15 +190,27 @@ def _classification_loss(logits, labels, mask, label_smoothing):
     return _masked_mean(per_sample_loss, mask)
 
 
-def _loss(model, images, labels, mask, label_smoothing, l2_reg, *, include_l2=True):
+def _loss(model, images, labels, mask, label_smoothing):
+    """Classification loss only; the L2 penalty is added to the gradient."""
     logits = model(images)
-    loss = _classification_loss(logits, labels, mask, label_smoothing)
-    if include_l2 and l2_reg:
-        # The reference adds lambda/2 * sum(w^2) to loss (including bias and
-        # normalization parameters unless the caller chooses a filtered model).
-        penalty = sum(p.square().sum() for p in model.parameters() if p.requires_grad)
-        loss = loss + 0.5 * l2_reg * penalty
-    return loss, logits
+    return _classification_loss(logits, labels, mask, label_smoothing), logits
+
+
+@torch.no_grad()
+def _add_l2_gradient(model, l2_reg, skip_1d=False):
+    """Add d/dw [0.5 * l2 * sum(w^2)] = l2 * w to the gradients (one fused op).
+
+    Equal to putting the penalty in the loss, as the JAX reference does, but
+    without building ``square().sum()`` graph nodes for every parameter.
+    ``skip_1d`` mirrors JAX no_weight_decay_on_bn (only tensors with ndim > 1).
+    """
+    if not l2_reg:
+        return
+    pairs = [(p.grad, p) for p in model.parameters()
+             if p.grad is not None and (p.ndim > 1 or not skip_1d)]
+    if pairs:
+        grads, params = zip(*pairs)
+        torch._foreach_add_(list(grads), list(params), alpha=l2_reg)
 
 
 def _get_rng_state():
@@ -230,77 +243,112 @@ def _set_mps_rng_state(state) -> None:
 def train_step(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
-    batch,
+    batches,
     *,
     learning_rate: Optional[float] = None,
     label_smoothing: float = 0.0,
     l2_reg: Optional[float] = None,
     gradient_clip_norm: Optional[float] = None,
     preserve_first_pass_buffers: bool = True,
+    no_weight_decay_on_bn: bool = False,
 ) -> dict[str, float]:
-    """Run one SGD update or the two forward/backward passes required by SAM."""
-    images, labels, mask = _unpack_batch(batch)
-    images, labels, mask = _move_batch_to_model_device(model, images, labels, mask)
+    """Run one optimizer update over ``batches`` (a list of microbatches).
+
+    Gradients of all microbatches are accumulated (weighted by their valid
+    sample counts) before the update. For SAM the perturbation is computed
+    from the full accumulated gradient, then every microbatch is replayed at
+    the perturbed weights, so the update equals one large-batch SAM step.
+    """
+    moved = [_move_batch_to_model_device(model, *_unpack_batch(b)) for b in batches]
+    sizes = [int(m.sum()) if m is not None else int(i.shape[0]) for i, _, m in moved]
+    weights = [n / max(sum(sizes), 1) for n in sizes]
     is_sam = isinstance(optimizer, SAM)
     if is_sam and l2_reg is not None:
         for group in optimizer.param_groups:
             group["l2_reg"] = l2_reg
+            group["l2_skip_1d"] = no_weight_decay_on_bn
     elif l2_reg is None:
         l2_reg = float(optimizer.param_groups[0].get("l2_reg", 0.0)) if is_sam else 0.0
     if learning_rate is not None:
         for group in optimizer.param_groups:
             group["lr"] = learning_rate
 
+    def accumulate(rng_states=None):
+        """Backward over every microbatch; returns weighted loss/error."""
+        loss_sum = error_sum = 0.0
+        states = []
+        for i, ((images, labels, mask), weight) in enumerate(zip(moved, weights)):
+            if rng_states is None:
+                states.append(_get_rng_state() if is_sam else None)
+            else:
+                _set_rng_state(rng_states[i])
+            loss, logits = _loss(model, images, labels, mask, label_smoothing)
+            (loss * weight).backward()
+            loss_sum = loss_sum + loss.detach() * weight
+            error_sum = error_sum + error_rate_metric(logits.detach(), labels, mask) * weight
+        return loss_sum, error_sum, states
+
     optimizer.zero_grad(set_to_none=True)
     # The JAX reference uses the same PRNG key for both SAM loss evaluations.
-    # Replay the first pass's RNG state for the perturbed pass, then leave the
-    # global generators advanced by one pass, as they would be without replay.
-    first_pass_rng = _get_rng_state() if is_sam else None
-    loss, logits = _loss(
-        model, images, labels, mask, label_smoothing, 0.0 if is_sam else l2_reg
-    )
-    loss.backward()
+    # Replay each microbatch's first-pass RNG state for the perturbed pass.
+    loss, error_rate, first_pass_rng = accumulate()
 
     if is_sam:
-        rng_after_first_pass = _get_rng_state()
-        optimizer.first_step(zero_grad=True)
+        optimizer.first_step(zero_grad=True)  # adds the L2 gradient itself
         buffers = (
             [buffer.detach().clone() for buffer in model.buffers()]
             if preserve_first_pass_buffers
             else None
         )
-        _set_rng_state(first_pass_rng)
-        loss, logits = _loss(model, images, labels, mask, label_smoothing, 0.0)
-        loss.backward()
-        _set_rng_state(rng_after_first_pass)
+        loss, error_rate, _ = accumulate(first_pass_rng)
         if buffers is not None:
             with torch.no_grad():
                 for buffer, saved in zip(model.buffers(), buffers):
                     buffer.copy_(saved)
         optimizer.add_l2_gradient()
+    else:
+        _add_l2_gradient(model, l2_reg, no_weight_decay_on_bn)
     clip_limit = gradient_clip_norm if gradient_clip_norm and gradient_clip_norm > 0 else float("inf")
-    torch.nn.utils.clip_grad_norm_(model.parameters(), clip_limit)
-    grad_norms = [p.grad.detach().norm(2) for p in model.parameters() if p.grad is not None]
-    grad_norm = float(torch.linalg.vector_norm(torch.stack(grad_norms))) if grad_norms else 0.0
+    # clip_grad_norm_ returns the pre-clip norm; the logged (post-clip) norm
+    # follows from the scale it applied, so no second pass over the gradients.
+    total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_limit)
+    grad_norm = total_norm * (clip_limit / (total_norm + 1e-6)).clamp(max=1.0)
     if is_sam:
         optimizer.second_step(l2_already_added=True)
     else:
         optimizer.step()
 
-    train_loss = float(
-        _classification_loss(logits.detach(), labels, mask, label_smoothing)
-    )
-    train_error = float(error_rate_metric(logits.detach(), labels, mask))
-    param_norms = [p.detach().norm(2) for p in model.parameters()]
-    param_norm = float(torch.linalg.vector_norm(torch.stack(param_norms))) if param_norms else 0.0
-    lr = float(optimizer.param_groups[0]["lr"])
-    return {
-        "train_loss": train_loss,
-        "train_error_rate": train_error,
-        "gradient_norm": grad_norm,
-        "param_norm": param_norm,
-        "learning_rate": lr,
+    # Metrics stay on the device (no per-step host sync); the epoch loop
+    # converts them once. ``loss`` is the classification loss on the last
+    # pass (the perturbed one for SAM), as in the JAX metrics.
+    with torch.no_grad():
+        params = [p.detach() for p in model.parameters()]
+        param_norm = torch.linalg.vector_norm(
+            torch.stack(torch._foreach_norm(params))) if params else torch.zeros(())
+        return {
+            "train_loss": loss,
+            "train_error_rate": error_rate,
+            "gradient_norm": grad_norm,
+            "param_norm": param_norm,
+            "learning_rate": float(optimizer.param_groups[0]["lr"]),
+        }
+
+
+def _eval_sums(model, batch, label_smoothing, top_k):
+    """Metric sums and valid-sample count for one batch (device tensors)."""
+    images, labels, mask = _unpack_batch(batch)
+    images, labels, mask = _move_batch_to_model_device(model, images, labels, mask)
+    logits = model(images)
+    count = (torch.tensor(float(images.shape[0]), device=logits.device)
+             if mask is None else mask.sum().to(logits.dtype))
+    sums = {
+        "loss": _classification_loss(logits, labels, mask, label_smoothing) * count,
+        "error_rate": error_rate_metric(logits, labels, mask) * count,
     }
+    if top_k is not None:
+        sums[_top_k_metric_name(top_k)] = (
+            top_k_error_rate_metric(logits, labels, top_k, mask) * count)
+    return sums, count
 
 
 @torch.no_grad()
@@ -315,20 +363,8 @@ def eval_step(
     was_training = model.training
     model.eval()
     try:
-        images, labels, mask = _unpack_batch(batch)
-        images, labels, mask = _move_batch_to_model_device(model, images, labels, mask)
-        logits = model(images)
-        count = images.shape[0] if mask is None else float(mask.sum())
-        result = {
-            "loss": float(_classification_loss(logits, labels, mask, label_smoothing) * count),
-            "error_rate": float(error_rate_metric(logits, labels, mask) * count),
-        }
-        if top_k is not None:
-            key = _top_k_metric_name(top_k)
-            result[key] = float(
-                top_k_error_rate_metric(logits, labels, top_k, mask) * count
-            )
-        return result
+        sums, _ = _eval_sums(model, batch, label_smoothing, top_k)
+        return {name: float(value) for name, value in sums.items()}
     finally:
         model.train(was_training)
 
@@ -344,22 +380,18 @@ def eval_on_dataset(
     """Aggregate batch metric sums by valid sample count, including short batches."""
     was_training = model.training
     model.eval()
-    totals = {"loss": 0.0, "error_rate": 0.0}
-    if top_k is not None:
-        totals[_top_k_metric_name(top_k)] = 0.0
+    totals: dict[str, torch.Tensor] = {}
     count = 0.0
     try:
         for batch in batches:
-            images, _, mask = _unpack_batch(batch)
-            count += images.shape[0] if mask is None else float(mask.sum())
-            batch_metrics = eval_step(
-                model, batch, label_smoothing=label_smoothing, top_k=top_k
-            )
-            for name, value in batch_metrics.items():
+            sums, batch_count = _eval_sums(model, batch, label_smoothing, top_k)
+            count = count + batch_count
+            for name, value in sums.items():
                 totals[name] = totals.get(name, 0.0) + value
     finally:
         model.train(was_training)
-    return {name: value / max(count, 1.0) for name, value in totals.items()}
+    denominator = max(float(count), 1.0)  # single host sync for the whole pass
+    return {name: float(value) / denominator for name, value in totals.items()}
 
 
 def train_for_one_epoch(
@@ -371,13 +403,17 @@ def train_for_one_epoch(
     scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
     summary_writer=None,
     max_steps: Optional[int] = None,
+    accumulation_steps: int = 1,
     freeze_batch_norm_statistics: bool = False,
+    ema: Optional[ExponentialMovingAverage] = None,
     **step_kwargs,
 ):
     """Train for one epoch, average batch metrics, and optionally log them.
 
-    ``step`` is the current global update count. The scheduler advances once
-    after each optimizer update; the returned step is the updated count.
+    ``step`` is the current global update count and ``max_steps`` limits
+    updates, not microbatches. Each update consumes ``accumulation_steps``
+    microbatches (the last one of an epoch may be shorter). The scheduler
+    advances once per update; the returned step is the updated count.
     """
     model.train()
     if freeze_batch_norm_statistics:
@@ -388,8 +424,14 @@ def train_for_one_epoch(
     totals: dict[str, float] = {}
     count = 0
     last_learning_rate = None
-    for batch in islice(batches, max_steps):
-        metrics = train_step(model, optimizer, batch, **step_kwargs)
+    batch_iter = iter(batches)
+    updates = 0
+    while max_steps is None or updates < max_steps:
+        group = list(islice(batch_iter, accumulation_steps))
+        if not group:
+            break
+        updates += 1
+        metrics = train_step(model, optimizer, group, **step_kwargs)
         last_learning_rate = metrics["learning_rate"]
         if scheduler is not None:
             scheduler.step()
@@ -397,7 +439,10 @@ def train_for_one_epoch(
             totals[key] = totals.get(key, 0.0) + value
         count += 1
         step += 1
-    averages = {key: value / max(count, 1) for key, value in totals.items()}
+        if ema is not None:
+            ema.update(model, step)
+    # Per-step metrics are device tensors; this is the epoch's only host sync.
+    averages = {key: float(value) / max(count, 1) for key, value in totals.items()}
     if last_learning_rate is not None:
         averages["learning_rate"] = last_learning_rate
     if summary_writer is not None:
@@ -410,6 +455,20 @@ def train_for_one_epoch(
         count,
     )
     return averages, step
+
+
+def _eval_state(model, ema):
+    """Weights evaluated and selected: EMA weights if used, else the model's."""
+    source = ema.shadow if ema is not None else model.state_dict()
+    return {k: v.detach().clone() for k, v in source.items()}
+
+
+def _plain_train_loader(data, config):
+    """Complete, non-augmented training split (no dropped remainder)."""
+    seed = int(config.get("seed", 1))
+    if hasattr(data, "_train_augmented"):
+        return data.get_train_loader(use_augmentations=False, seed=seed)
+    return data.get_train_loader(seed=seed, drop_last=False)
 
 
 def _atomic_save(state, path: Path) -> None:
@@ -450,6 +509,18 @@ def _make_optimizer(model, optimizer_name: str, config: dict, training: dict):
     """Create the configured optimizer with the reference's L2 handling."""
     from sam_pytorch.optimizers import make_sgd
 
+    if training.get("use_rmsprop", False):
+        # EfficientNet-paper settings: beta2=0.9, eps=0.001.
+        rms_args = {"lr": float(training["learning_rate"]),
+                    "beta": float(training.get("momentum", 0.9)),
+                    "beta2": 0.9, "eps": 0.001}
+        rho = float(config.get("sam", {}).get("rho", 0.05))
+        if optimizer_name == "sam" and rho > 0:
+            return SAM(model.parameters(), base_optimizer=RMSProp, rho=rho,
+                       l2_skip_1d=bool(training.get("no_weight_decay_on_bn", False)),
+                       **rms_args)
+        if optimizer_name in ("sam", "sgd"):
+            return RMSProp(model.parameters(), **rms_args)
     optimizer_args = {
         "lr": float(training["learning_rate"]),
         "momentum": float(training.get("momentum", 0.9)),
@@ -465,6 +536,7 @@ def _make_optimizer(model, optimizer_name: str, config: dict, training: dict):
             model.parameters(),
             base_optimizer=torch.optim.SGD,
             rho=rho,
+            l2_skip_1d=bool(training.get("no_weight_decay_on_bn", False)),
             **optimizer_args,
         )
     if optimizer_name == "sgd":
@@ -493,26 +565,40 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
                           "mps" if torch.backends.mps.is_available() else "cpu")
     model.to(device)
     optimizer = _make_optimizer(model, optimizer_name, config, training)
+    ema_decay = float(training.get("ema_decay", 0.0))
+    ema = ExponentialMovingAverage(model, ema_decay) if ema_decay else None
+    smooth = float(training.get("label_smoothing", 0.0))
+    top_k = 5 if training.get("compute_top_5_error_rate", False) else None
+    evaluate_every = int(training.get("evaluate_every", 1))
+    extra_checkpoints = set(training.get("additional_checkpoints_at_epochs") or [])
 
     epochs, max_steps = training.get("epochs"), training.get("max_steps")
     if (epochs is None) == (max_steps is None):
         raise ValueError("Set exactly one of training.epochs or training.max_steps")
     batch_size = int(training["batch_size"])
+    accumulation = int(training.get("gradient_accumulation_steps", 1))
+    if accumulation < 1:
+        raise ValueError("training.gradient_accumulation_steps must be >= 1")
+    effective = training.get("effective_batch_size")
+    if effective is not None and int(effective) != batch_size * accumulation:
+        raise ValueError(
+            f"effective_batch_size {effective} != batch_size {batch_size} x "
+            f"gradient_accumulation_steps {accumulation}")
     train_loader_steps = len(data.get_train_loader(seed=int(config.get("seed", 1)) + 1))
-    steps_per_epoch = max(1, train_loader_steps)
+    steps_per_epoch = max(1, -(-train_loader_steps // accumulation))  # updates per epoch
     epochs = int(epochs) if epochs is not None else (int(max_steps) + steps_per_epoch - 1) // steps_per_epoch
     scheduler_steps = (int(max_steps) if max_steps is not None
                        else epochs * steps_per_epoch)
     scheduler = make_learning_rate_scheduler(
         optimizer, training.get("scheduler", "constant"), epochs,
-        data.num_training_obs, batch_size,
+        data.num_training_obs, batch_size * accumulation,
         warmup_epochs=float(training.get("warmup_epochs", 0)),
         steps_per_epoch_override=steps_per_epoch,
         total_steps_override=scheduler_steps)
 
-    last_path, best_path = run_dir / "last.pt", run_dir / "best.pt"
+    last_path = run_dir / "last.pt"
     history, started_at, elapsed_before, epoch_seconds = [], datetime.now(timezone.utc).isoformat(), 0.0, 0.0
-    best_error_rate, best_epoch, step, first_epoch = float("inf"), 0, 0, 1
+    step, first_epoch = 0, 1
     if last_path.exists():
         state = torch.load(last_path, map_location=device, weights_only=False)
         model.load_state_dict(state["model"])
@@ -521,6 +607,8 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
                 state.get("base_optimizer") is not None):
             optimizer.base_optimizer.load_state_dict(state["base_optimizer"])
             optimizer.param_groups = optimizer.base_optimizer.param_groups
+        if ema is not None and state.get("ema") is not None:
+            ema.shadow = {k: v.to(device) for k, v in state["ema"].items()}
         if scheduler is not None and state.get("scheduler") is not None:
             scheduler.load_state_dict(state["scheduler"])
         if "torch_rng" in state:
@@ -533,7 +621,6 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
         if "history" in state:
             history, started_at = state["history"], state["started_at"]
             elapsed_before, epoch_seconds = state["elapsed_seconds"], state["epoch_seconds"]
-            best_error_rate, best_epoch = state["best_error_rate"], state["best_epoch"]
         else:  # Also recover the earlier checkpoint format already in outputs/.
             with (run_dir / "metrics.csv").open(newline="") as csv_file:
                 history = []
@@ -551,9 +638,6 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
             elapsed_before = float(next(line.split(": ", 1)[1] for line in result_lines
                                         if line.startswith("run_elapsed_seconds:")))
             epoch_seconds = sum(row["epoch_seconds"] for row in history)
-            best_epoch = int(torch.load(best_path, map_location="cpu", weights_only=False)["epoch"])
-            best_error_rate = next(row["val_error_rate"] for row in history
-                                   if row["epoch"] == best_epoch)
         step, first_epoch = state["step"], state["epoch"] + 1
         logging.info("Recovered checkpoint at epoch %d, step %d", first_epoch - 1, step)
     else:
@@ -567,18 +651,47 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
     session_started = time.time()
     (run_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
 
+    def _eval_model():
+        """Model evaluated each epoch: the EMA weights when EMA is on."""
+        if ema is None:
+            return model
+        ema_model = copy.deepcopy(model)
+        ema_model.load_state_dict(ema.shadow)
+        return ema_model
+
     for epoch in range(first_epoch, epochs + 1):
+        if (epoch - 1) in extra_checkpoints:
+            # JAX saves these before training 0-indexed epoch n, in their own file.
+            _atomic_save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),
+                          "ema": ema.shadow if ema else None, "epoch": epoch - 1,
+                          "step": step}, run_dir / f"additional_ckpt_{epoch - 1}.pt")
         tick = time.time()
         batches = data.get_train_loader(seed=int(config.get("seed", 1)) + epoch)
         remaining = None if max_steps is None else max(0, int(max_steps) - step)
         train_metrics, step = train_for_one_epoch(
             model, optimizer, batches, step=step, scheduler=scheduler, max_steps=remaining,
+            accumulation_steps=accumulation,
             freeze_batch_norm_statistics=bool(training.get("freeze_batch_norm_statistics", False)),
-            label_smoothing=float(training.get("label_smoothing", 0.0)),
+            ema=ema, label_smoothing=smooth,
             l2_reg=float(training.get("weight_decay", 0.001)),
-            gradient_clip_norm=training.get("gradient_clip_norm", 5.0))
-        validation = eval_on_dataset(model, data.get_validation_loader(),
-                                     label_smoothing=float(training.get("label_smoothing", 0.0)))
+            gradient_clip_norm=training.get("gradient_clip_norm", 5.0),
+            no_weight_decay_on_bn=bool(training.get("no_weight_decay_on_bn", False)))
+        # As in JAX, evaluate only every `evaluate_every` epochs.
+        evaluate = epoch % evaluate_every == 0
+        nan = float("nan")
+        validation = {"loss": nan, "error_rate": nan}
+        extra_metrics = {}
+        if evaluate:
+            eval_model = _eval_model()
+            validation = eval_on_dataset(eval_model, data.get_validation_loader(),
+                                         label_smoothing=smooth, top_k=top_k)
+            if top_k is not None:
+                extra_metrics["val_" + _top_k_metric_name(top_k)] = validation[_top_k_metric_name(top_k)]
+            if training.get("also_eval_on_training_set", False):
+                train_eval = eval_on_dataset(eval_model, _plain_train_loader(data, config),
+                                             label_smoothing=smooth)
+                extra_metrics["eval_on_train_loss"] = train_eval["loss"]
+                extra_metrics["eval_on_train_error_rate"] = train_eval["error_rate"]
         duration = time.time() - tick
         epoch_seconds += duration
         row = {"epoch": epoch, "step": step,
@@ -587,14 +700,12 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
                "train_error_rate": train_metrics.get("train_error_rate", 0.0),
                "validation_loss": validation["loss"],
                "val_error_rate": validation["error_rate"],
-               "epoch_seconds": duration}
+               "epoch_seconds": duration, **extra_metrics}
         history.append(row)
-        if row["val_error_rate"] < best_error_rate:
-            best_error_rate, best_epoch = row["val_error_rate"], epoch
-            _atomic_save({"model": model.state_dict(), "epoch": epoch}, best_path)
         elapsed = elapsed_before + time.time() - session_started
         _atomic_save({
             "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+            "ema": ema.shadow if ema else None,
             "base_optimizer": (optimizer.base_optimizer.state_dict()
                                if isinstance(optimizer, SAM) else None),
             "scheduler": scheduler.state_dict() if scheduler else None,
@@ -604,8 +715,7 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
             "mps_rng": _get_mps_rng_state(),
             "history": history, "started_at": started_at,
             "elapsed_seconds": elapsed,
-            "epoch_seconds": epoch_seconds, "best_error_rate": best_error_rate,
-            "best_epoch": best_epoch, "step": step, "epoch": epoch,
+            "epoch_seconds": epoch_seconds, "step": step, "epoch": epoch,
         }, last_path)
         with (run_dir / "train.log").open("a") as log:
             log.write(
@@ -621,16 +731,12 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
         if max_steps is not None and step >= int(max_steps):
             break
 
-    if not best_path.exists():
-        raise RuntimeError("Training ended without producing best.pt")
-    # Final train/test metrics are measured using the selected best.pt weights.
-    best = torch.load(best_path, map_location=device, weights_only=False)
-    model.load_state_dict(best["model"])
-    train_loader = (data.get_train_loader(use_augmentations=False, seed=int(config.get("seed", 1)))
-                    if hasattr(data, "_train_augmented")
-                    else data.get_train_loader(seed=int(config.get("seed", 1))))
-    validation_loader, test_loader = data.get_validation_loader(), data.get_test_loader()
+    # As in the JAX reference, the reported result is the final epoch's model
+    # (EMA weights when EMA is on); no checkpoint is selected on validation.
+    model.load_state_dict(_eval_state(model, ema))
     smooth = float(training.get("label_smoothing", 0.0))
+    train_loader = _plain_train_loader(data, config)
+    validation_loader, test_loader = data.get_validation_loader(), data.get_test_loader()
     train_final, train_report = _classification_results(model, train_loader, data.class_names, smooth)
     test_final, test_report = _classification_results(model, test_loader, data.class_names, smooth)
     completed = datetime.now(timezone.utc).isoformat()
@@ -654,15 +760,14 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
              "classes_by_index: " + ", ".join(f"{i}={name}" for i, name in enumerate(data.class_names)), "",
              "[epoch_metrics]", "epoch,step,learning_rate,train_loss,train_error_rate,validation_loss,val_error_rate,epoch_seconds"]
     lines.extend(",".join(str(row[key]) for key in ("epoch", "step", "learning_rate", "train_loss", "train_error_rate", "validation_loss", "val_error_rate", "epoch_seconds")) for row in history)
-    lines.extend(["", "[checkpoint_selection]", "criterion: lowest validation error rate",
-                  f"best_epoch: {best_epoch}", f"best_validation_error_rate: {best_error_rate:.6f}",
-                  "best_checkpoint: best.pt", "last_checkpoint: last.pt",
-                  "final_evaluation_checkpoint: best.pt", "", "[train_metrics]"])
+    lines.extend(["", "[checkpoint]", "last_checkpoint: last.pt",
+                  "final_evaluation_checkpoint: last epoch (no best-checkpoint selection)",
+                  "", "[train_metrics]"])
     lines.extend(f"{key}: {value:.6f}" for key, value in train_final.items())
     lines.extend(["", "[train_classification_report]", train_report, "", "[test_metrics]"])
     lines.extend(f"{key}: {value:.6f}" for key, value in test_final.items())
     lines.extend(["", "[test_classification_report]", test_report])
     (run_dir / "results.txt").write_text("\n".join(lines) + "\n")
     (run_dir / "metrics.txt").unlink(missing_ok=True)
-    return {"history": history, "best_epoch": best_epoch,
+    return {"history": history,
             "train_metrics": train_final, "test_metrics": test_final}

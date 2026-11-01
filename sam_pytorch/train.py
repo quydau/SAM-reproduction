@@ -1,6 +1,8 @@
-"""Train WRN-28-10 on CIFAR-10 from a YAML experiment config."""
+"""Train WRN-16-8 on CIFAR-10 from a YAML experiment config."""
 
 import argparse
+import copy
+import itertools
 from pathlib import Path
 
 from sam_pytorch.datasets import CIFAR10DataModule
@@ -8,25 +10,11 @@ from sam_pytorch.models import create_model
 from sam_pytorch.train_utils import load_config, seed_everything, train
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/cifar10_wrn28x10.yaml")
-    parser.add_argument("--optimizer", choices=("sgd", "sam"), required=True,
-                        help="Optimizer for this run")
-    parser.add_argument("--seed", type=int, help="Override config.seed")
-    parser.add_argument("--augmentation", choices=("basic", "cutout", "autoaugment"))
-    limits = parser.add_mutually_exclusive_group()
-    limits.add_argument("--epochs", type=int, help="Override training.epochs (quick run)")
-    limits.add_argument("--steps", type=int, help="Override training.max_steps (quick run)")
-    args = parser.parse_args()
-
-    config = load_config(args.config)
-    if config["dataset"] != "cifar10" or config["model"] != "wrn28x10":
-        raise ValueError("train.py requires a CIFAR-10 WRN-28-10 config")
-    if args.seed is not None:
-        config["seed"] = args.seed
-    if args.augmentation is not None:
-        config["augmentation"] = args.augmentation
+def run(config, optimizer, augmentation, seed, args) -> None:
+    config = copy.deepcopy(config)
+    config["seed"] = seed
+    if augmentation is not None:
+        config["augmentation"] = augmentation
     if args.epochs is not None:
         config["training"]["epochs"] = args.epochs
         config["training"]["max_steps"] = None
@@ -50,9 +38,39 @@ def main() -> None:
     seed_everything(int(config["seed"]))
     model = create_model(config["model"], int(config["num_classes"]))
     run_dir = (Path(config.get("output_root", "outputs")) / "cifar10"
-               / config["model"] / config["augmentation"] / args.optimizer
+               / config["model"] / config["augmentation"] / optimizer
                / f"seed_{config['seed']}")
-    train(model, data, config, args.optimizer, run_dir)
+    train(model, data, config, optimizer, run_dir)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", default="configs/cifar10_wrn16x8.yaml")
+    parser.add_argument("--optimizer", nargs="+", choices=("sgd", "sam"), required=True,
+                        help="One or more optimizers; each runs in turn")
+    parser.add_argument("--seed", nargs="+", type=int,
+                        help="One or more seeds (default: config.seed)")
+    parser.add_argument("--augmentation", nargs="+",
+                        choices=("basic", "cutout", "autoaugment"),
+                        help="One or more augmentations (default: config.augmentation)")
+    limits = parser.add_mutually_exclusive_group()
+    limits.add_argument("--epochs", type=int, help="Override training.epochs (quick run)")
+    limits.add_argument("--steps", type=int, help="Override training.max_steps (quick run)")
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+    if config["dataset"] != "cifar10" or config["model"] != "wrn16x8":
+        raise ValueError("train.py requires a CIFAR-10 WRN-16-8 config")
+
+    seeds = args.seed or [int(config["seed"])]
+    augmentations = args.augmentation or [None]
+    # dict.fromkeys drops duplicates while keeping order.
+    combos = list(itertools.product(
+        dict.fromkeys(seeds), dict.fromkeys(augmentations), dict.fromkeys(args.optimizer)))
+    for i, (seed, augmentation, optimizer) in enumerate(combos, 1):
+        print(f"[{i}/{len(combos)}] seed={seed} augmentation="
+              f"{augmentation or config['augmentation']} optimizer={optimizer}", flush=True)
+        run(config, optimizer, augmentation, seed, args)
 
 
 if __name__ == "__main__":

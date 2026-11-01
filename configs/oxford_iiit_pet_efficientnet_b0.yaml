@@ -11,9 +11,11 @@ split:
   seed: 1
 
 training:
-  # T4 memory adaptation: effective batch 256 via 16 x 16 accumulation.
-  batch_size: 16
-  gradient_accumulation_steps: 16
+  # T4 (16 GB, fp32) tuning: effective batch 256 via 64 x 4 accumulation.
+  # BatchNorm statistics are frozen, so microbatch size does not change results.
+  # If CUDA OOM occurs with SAM, use 32 x 8.
+  batch_size: 64
+  gradient_accumulation_steps: 4
   effective_batch_size: 256
   epochs: null
   max_steps: 20000 # Paper's 5k steps at batch 1024, exposure-matched to batch 256.
