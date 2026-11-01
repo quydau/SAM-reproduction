@@ -1,0 +1,54 @@
+# SAM paper §3.3 "Robustness to label noise" (Table 4): SGD, SAM, Bootstrap + SAM.
+# Run with: python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32.yaml ...
+# Source tags: [paper] = stated in the SAM paper; [jiang] = Jiang et al. 2020 (the
+# setup SAM says it follows); [repo] = default of the official google-research/sam
+# code; [choice] = NOT stated anywhere, chosen for this reproduction.
+experiment: cifar10_noisy_resnet32
+dataset: cifar10
+data_root: data
+model: resnet32        # [paper §3.3][jiang §5.1] ResNet-32 trained from scratch (random init).
+num_classes: 10
+augmentation: basic    # [jiang B.2] "standard data augmentation"; flip + reflect-pad 4 + crop.
+seed: 1
+
+label_noise:
+  rates: [0.2, 0.4, 0.6, 0.8]   # [paper Table 4]
+  # [choice] Exactly floor(rate*45000) training labels are flipped to a different
+  # class chosen uniformly ("randomly flipped", §3.3). Validation/test stay clean.
+  type: flip_to_other_class
+  # Noise seed = noise_seed_offset + run seed, so SGD / SAM / Bootstrap share the
+  # same noisy labels for a given (rate, seed).
+  noise_seed_offset: 1000
+
+split:
+  # [paper C.1] clean validation set = random 10% of the CIFAR training samples.
+  validation_fraction: 0.1
+  seed: 1
+
+training:
+  epochs: 200            # [paper §3.3]
+  batch_size: 256        # [paper C.1] "For CIFAR10 ... we use a batch size of 256"
+  gradient_accumulation_steps: 1
+  effective_batch_size: 256
+  num_workers: 8
+  learning_rate: 0.1     # [choice] Not given for §3.3; Table 6, CIFAR-10 200-epoch row.
+  weight_decay: 0.0005   # [choice] Not given for §3.3; Table 6, CIFAR-10 200-epoch row.
+  scheduler: cosine      # [repo] cosine, no warmup.
+  momentum: 0.9          # [repo]
+  nesterov: true         # [repo] hard-coded in optim.Momentum(..., nesterov=True)
+  label_smoothing: 0.0   # [repo] default
+  gradient_clip_norm: 5.0  # [repo] default
+  # Weight decay is the [repo] L2 loss term 0.5*wd*||w||^2 on all parameters
+  # (BN/bias included); train_utils.train_step implements it.
+
+sam:
+  # [paper §3.3] "rho = 0.1 for all noise levels except 80%, for which we use
+  # rho = 0.05"; matches the best entries of Table 8. Bootstrap uses the same rho
+  # in both stages.
+  rho_by_noise_rate:
+    0.2: 0.1
+    0.4: 0.1
+    0.6: 0.1
+    0.8: 0.05
+
+output_root: outputs

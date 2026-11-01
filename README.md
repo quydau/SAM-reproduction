@@ -61,6 +61,37 @@ outputs/{dataset}/{model}/{augmentation}/{optimizer}/seed_{seed}/
 
 Ví dụ: `outputs/cifar10/wrn16x8/basic/sam/seed_1/`.
 
+## §3.3 Robustness to label noise (Table 4): SGD, SAM, Bootstrap + SAM
+
+Mục này tái hiện ba dòng SGD, SAM và Bootstrap + SAM trong Table 4. Mô hình là ResNet-32 **train từ đầu** (khởi tạo ngẫu nhiên) trên CIFAR-10. Một phần nhãn train bị lật, còn validation và test giữ sạch. Repo gốc google-research/sam không có code cho thí nghiệm này, nên toàn bộ pipeline ở đây được viết mới: [`sam_pytorch/label_noise.py`](sam_pytorch/label_noise.py), [`sam_pytorch/resnet_cifar.py`](sam_pytorch/resnet_cifar.py), phần nhãn nhiễu trong [`datasets.py`](sam_pytorch/datasets.py), và config [`configs/cifar10_noisy_resnet32.yaml`](configs/cifar10_noisy_resnet32.yaml).
+
+| Mục | Giá trị | Nguồn |
+|---|---|---|
+| Model | ResNet-32 (He et al. 2016, n=5, kênh 16/32/64, 464K tham số), from scratch | SAM §3.3; Jiang et al. 2020 §5.1: *"we train networks from scratch using ResNet-32 for CIFAR"* |
+| Epochs / batch | 200 / 256 | SAM §3.3 / SAM C.1 |
+| ρ | 0.1 cho nhiễu 20/40/60%, 0.05 cho 80% | SAM §3.3, Table 8 |
+| LR / WD | 0.1 / 5e-4 | **Tự chọn**: bài không ghi cho §3.3, lấy theo Table 6 (CIFAR-10, 200 epochs) |
+| Lịch LR, optimizer, L2, clip | cosine; SGD momentum 0.9 Nesterov; L2 `0.5·wd·‖w‖²` trên mọi tham số; clip 5 | Code gốc SAM |
+| Augmentation | basic (flip + pad 4 + crop) | Jiang B.2: *"standard data augmentation"* |
+| Split | 45k train (nhiễu) / 5k validation (sạch) / 10k test (sạch) | SAM C.1: validation sạch = 10% tập train |
+| Nhiễu | Chọn đúng ⌊r·45000⌋ mẫu, đổi nhãn sang một lớp **khác**, chọn ngẫu nhiên đều | **Tự chọn** cách hiểu chữ "randomly flipped" |
+| Bootstrap | Model SAM ở epoch cuối dự đoán argmax trên 45k ảnh train (không augmentation); sau đó train SAM lại từ đầu trên nhãn dự đoán, cùng ρ | SAM §3.3: *"retrained from scratch on the labels predicted by the initially trained model"* |
+
+Các điểm bài không ghi và repo phải tự chọn: LR/WD, kiểu lật nhãn, shortcut option A của ResNet-32, dùng nhãn cứng khi bootstrap, train trên 45k (giữ 5k làm validation). Cùng một seed thì cùng bộ nhãn nhiễu (`noise_seed = noise_seed_offset + seed`), nên SGD, SAM và Bootstrap được so trên đúng một bộ nhãn. Kết quả báo cáo là model ở epoch cuối, đánh giá test một lần. Mục `[train_metrics]` trong `results.txt` được tính trên nhãn train đang dùng: nhãn nhiễu, hoặc nhãn dự đoán với bootstrap.
+
+```bash
+# 4 mức nhiễu x 3 phương pháp; bootstrap_sam tái dùng run sam cùng mức nhiễu/seed (tự train nếu chưa có)
+python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32.yaml \
+  --method sgd sam bootstrap_sam --noise-rate 0.2 0.4 0.6 0.8 --seed 1
+# Chạy thử nhanh
+python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32.yaml \
+  --method sgd sam bootstrap_sam --noise-rate 0.8 --steps 5
+# Gom kết quả thành bảng giống Table 4 (ghi ra outputs/cifar10_noisy/summary.md)
+python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32.yaml --summarize
+```
+
+Output nằm ở `outputs/cifar10_noisy/resnet32/noise_{20,40,60,80}/{sgd,sam,bootstrap_sam}/seed_{s}/`. Thư mục bootstrap có thêm `bootstrap_labels.pt` và `bootstrap_stats.txt`; file stats ghi tỷ lệ nhãn dự đoán trùng nhãn sạch và trùng nhãn nhiễu. Nếu train lại run `sam` thì phải xóa `bootstrap_labels.pt` để nhãn được dự đoán lại.
+
 ## Cài đặt
 
 Khuyến nghị Python 3.10 hoặc 3.11. Cài cặp `torch`/`torchvision` phù hợp hệ điều hành và CUDA bằng [bộ chọn cài đặt PyTorch chính thức](https://pytorch.org/get-started/locally/), sau đó cài phần còn lại:

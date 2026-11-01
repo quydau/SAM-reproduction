@@ -30,6 +30,43 @@ class _BatchCollator:
         return images, labels
 
 
+def make_flipped_labels(clean_labels: list[int], rate: float, num_classes: int,
+                        seed: int) -> list[int]:
+    """Flip exactly ``floor(rate * N)`` labels, each to a *different* class.
+
+    The flipped examples are a seeded uniform sample without replacement; each
+    new label is drawn uniformly from the other ``num_classes - 1`` classes,
+    so the fraction of wrong labels is exactly ``rate`` (up to flooring).
+    """
+    if not 0.0 <= rate <= 1.0:
+        raise ValueError("label noise rate must be in [0, 1]")
+    labels = torch.as_tensor(clean_labels, dtype=torch.long).clone()
+    generator = torch.Generator().manual_seed(seed)
+    num_noisy = int(rate * len(labels))
+    flipped = torch.randperm(len(labels), generator=generator)[:num_noisy]
+    offsets = torch.randint(1, num_classes, (num_noisy,), generator=generator)
+    labels[flipped] = (labels[flipped] + offsets) % num_classes
+    return labels.tolist()
+
+
+class _RelabeledSubset(Dataset):
+    """Subset of a labelled dataset whose labels are replaced by ``labels``."""
+
+    def __init__(self, source: Dataset, indices: list[int], labels: list[int]):
+        if len(indices) != len(labels):
+            raise ValueError("indices and labels must have the same length")
+        self.source = source
+        self.indices = list(indices)
+        self.labels = list(labels)
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, i):
+        image, _ = self.source[self.indices[i]]
+        return image, self.labels[i]
+
+
 class CIFAR10DataModule:
     """Owns reproducible CIFAR-10 train/validation/test loaders.
 
@@ -47,7 +84,12 @@ class CIFAR10DataModule:
                  augmentation: str = "basic", validation_seed: int = 1,
                  num_workers: int = 4, cutout_length: int = 16,
                  crop_padding: int = 4, pin_memory: Optional[bool] = None,
-                 horizontal_flip_probability: float = 0.5):
+                 horizontal_flip_probability: float = 0.5,
+                 label_noise_rate: float = 0.0, noise_seed: int = 0,
+                 train_labels_override: Optional[list[int]] = None):
+        """``label_noise_rate`` flips that fraction of the 45k *training*
+        labels (validation and test stay clean); ``train_labels_override``
+        replaces the training labels entirely (used by bootstrapping)."""
         if batch_size < 1 or num_workers < 0:
             raise ValueError("batch_size must be positive and num_workers >= 0")
 
@@ -87,6 +129,22 @@ class CIFAR10DataModule:
         self.train_indices = indices[:self.TRAIN_SIZE]
         self.validation_indices = indices[self.TRAIN_SIZE:]
 
+        # Nhãn train: sạch, bị lật một phần (label noise), hoặc thay hẳn (bootstrap).
+        targets = self._train_plain.targets
+        self.clean_train_labels = [int(targets[i]) for i in self.train_indices]
+        if train_labels_override is not None:
+            if len(train_labels_override) != self.TRAIN_SIZE:
+                raise ValueError("train_labels_override must have 45,000 labels")
+            self.train_labels = [int(y) for y in train_labels_override]
+        elif label_noise_rate > 0:
+            self.train_labels = make_flipped_labels(
+                self.clean_train_labels, label_noise_rate, self.NUM_CLASSES,
+                noise_seed)
+        else:
+            self.train_labels = list(self.clean_train_labels)
+        self.num_wrong_train_labels = sum(
+            a != b for a, b in zip(self.train_labels, self.clean_train_labels))
+
     def _loader(self, dataset: Dataset, *, shuffle: bool, drop_last: bool,
                 seed: int, cutout: bool = False,
                 batch_size: Optional[int] = None) -> DataLoader:
@@ -110,11 +168,20 @@ class CIFAR10DataModule:
         """Return train data, dropping an incomplete batch for training."""
         # Subset chọn đúng các chỉ số đã phân vào train, không gồm validation.
         source = self._train_augmented if use_augmentations else self._train_plain
-        dataset = Subset(source, self.train_indices)
+        dataset = _RelabeledSubset(source, self.train_indices, self.train_labels)
         return self._loader(dataset, shuffle=True,
                             # Khi augmentation bật, bỏ batch cuối nếu batch đó không đủ kích thước.
                             drop_last=use_augmentations, seed=seed,
                             cutout=use_augmentations)
+
+    def get_train_prediction_loader(self) -> DataLoader:
+        """Train images in fixed order, no augmentation, for bootstrapping.
+
+        Batch ``i`` of this loader covers ``train_indices[i*B:(i+1)*B]``.
+        """
+        dataset = _RelabeledSubset(self._train_plain, self.train_indices,
+                                   self.train_labels)
+        return self._loader(dataset, shuffle=False, drop_last=False, seed=0)
 
     def get_validation_loader(self) -> DataLoader:
         """Return the fixed validation split without augmentation."""

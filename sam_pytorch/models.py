@@ -3,6 +3,7 @@
 from torch import nn
 from torchvision.models import EfficientNet_B0_Weights, efficientnet_b0
 
+from .resnet_cifar import ResNetCIFAR
 from .wideresnet import WideResNet
 
 
@@ -24,6 +25,8 @@ def create_model(model_name, num_classes, pretrained_weights="IMAGENET1K_V1"):
     """Build the model named in an experiment config."""
     if model_name == "wrn16x8":
         return WideResNet(depth=16, num_classes=num_classes, widen_factor=8)
+    if model_name == "resnet32":
+        return ResNetCIFAR(depth=32, num_classes=num_classes)
     if model_name == "efficientnet_b0":
         return EfficientNetB0(num_classes, pretrained_weights)
     raise ValueError(f"Unsupported model: {model_name}")
