@@ -16,6 +16,7 @@ Examples:
 import argparse
 import copy
 import itertools
+import logging
 import re
 from pathlib import Path
 
@@ -214,6 +215,7 @@ def main() -> None:
     limits.add_argument("--epochs", type=int, help="Override training.epochs (quick run)")
     limits.add_argument("--steps", type=int, help="Override training.max_steps (quick run)")
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
     config = load_config(args.config)
     if args.summarize:
