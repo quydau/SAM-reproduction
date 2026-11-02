@@ -11,15 +11,18 @@ split:
   seed: 1
 
 training:
-  # RTX 3090 (24 GB, fp32) tuning: effective batch 1024 via 256 x 4 accumulation.
+  # Tesla T4 (16 GB, fp16): effective batch 1024 via 256 x 4 accumulation.
   # BatchNorm statistics are frozen, so microbatch size does not change results.
-  # If CUDA OOM occurs with SAM, use 128 x 8 (or 64 x 16).
-  batch_size: 256
-  gradient_accumulation_steps: 4
+  # If CUDA OOM occurs with SAM, use 128 x 8 (or 64 x 16); note this changes how
+  # the epoch remainder is dropped when the train size is not a multiple of 1024.
+  batch_size: 128
+  gradient_accumulation_steps: 8
   effective_batch_size: 1024
   epochs: null
   max_steps: 5000 # Paper's C.2: 5k steps at batch 1024.
-  num_workers: 4
+  mixed_precision: fp16 # CUDA fp16 autocast + dynamic loss scaling (T4 has no bf16). Set false for fp32.
+  channels_last: true # Faster convolutions on tensor cores.
+  cudnn_benchmark: true # Autotune conv kernels (fixed input shapes).
   learning_rate: 0.016 # Paper C.2 value for batch 1024.
   scheduler: cosine
   weight_decay: 0.00001
@@ -28,6 +31,8 @@ training:
   label_smoothing: 0.1 # Matches the official SAM README's EfficientNet fine-tuning command.
   gradient_clip_norm: 1.0 # Matches --gradient_clipping 1.0 in that command.
   freeze_batch_norm_statistics: true
+  evaluate_every: 10 # Validate sparsely; the last epoch is always evaluated.
+  checkpoint_every: 50 # Resume checkpoint (last.pt) interval; the last epoch is always saved.
 
 sam:
   rho: 0.05

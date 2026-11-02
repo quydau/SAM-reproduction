@@ -110,6 +110,17 @@ class SAM(Optimizer):
             self.zero_grad()
 
     @torch.no_grad()
+    def restore_weights(self, zero_grad: bool = False) -> None:
+        """Undo ``first_step`` without updating (e.g. to skip a bad step)."""
+        for group in self.param_groups:
+            for parameter in group["params"]:
+                if parameter.grad is None:
+                    continue
+                parameter.data = self.state[parameter]["old_p"]
+        if zero_grad:
+            self.zero_grad()
+
+    @torch.no_grad()
     def add_l2_gradient(self) -> None:
         for group in self.param_groups:
             coefficient = group["l2_reg"]

@@ -8,6 +8,7 @@ delegated to :class:`sam_pytorch.optimizers.SAM`.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import csv
 import logging
@@ -177,9 +178,60 @@ def _move_batch_to_model_device(model, images, labels, mask):
     """Move this single-process batch onto the model's device (GPU or CPU)."""
     device = next(model.parameters()).device
     images = images.to(device, non_blocking=True)
+    if getattr(model, "channels_last", False) and images.ndim == 4:
+        images = images.contiguous(memory_format=torch.channels_last)
     labels = labels.to(device, non_blocking=True)
     mask = mask.to(device, non_blocking=True) if mask is not None else None
     return images, labels, mask
+
+
+def _autocast(model):
+    """fp16 autocast context when ``train`` enabled mixed precision on CUDA."""
+    if getattr(model, "amp_fp16", False):
+        return torch.autocast("cuda", dtype=torch.float16)
+    return contextlib.nullcontext()
+
+
+class _LossScaler:
+    """Dynamic fp16 loss scale for the manual two-pass (SAM) training step.
+
+    ``torch.amp.GradScaler`` cannot unscale twice per update, which SAM
+    needs (once before the perturbation, once before the real step), so the
+    scale is managed here. Growth that overshoots costs one skipped update.
+    """
+
+    def __init__(self, scale: float = 2.0 ** 13, growth_interval: int = 1000,
+                 max_scale: float = 2.0 ** 20):
+        self.scale, self.growth_interval, self.max_scale = scale, growth_interval, max_scale
+        self._good_steps = 0
+
+    def update(self, found_inf: bool) -> None:
+        if found_inf:
+            self.scale = max(self.scale * 0.5, 1.0)
+            self._good_steps = 0
+            logging.warning("Skipped update: non-finite gradients; loss scale -> %g",
+                            self.scale)
+        else:
+            self._good_steps += 1
+            if self._good_steps >= self.growth_interval:
+                self.scale = min(self.scale * 2.0, self.max_scale)
+                self._good_steps = 0
+
+    def state_dict(self) -> dict:
+        return {"scale": self.scale, "good_steps": self._good_steps}
+
+    def load_state_dict(self, state: dict) -> None:
+        self.scale, self._good_steps = state["scale"], state["good_steps"]
+
+
+@torch.no_grad()
+def _unscale_gradients(model, scale: float) -> bool:
+    """Divide gradients by ``scale``; return whether they are all finite."""
+    grads = [p.grad for p in model.parameters() if p.grad is not None]
+    if not grads:
+        return True
+    torch._foreach_mul_(grads, 1.0 / scale)
+    return bool(torch.isfinite(torch.stack(torch._foreach_norm(grads))).all())
 
 
 def _classification_loss(logits, labels, mask, label_smoothing):
@@ -192,7 +244,9 @@ def _classification_loss(logits, labels, mask, label_smoothing):
 
 def _loss(model, images, labels, mask, label_smoothing):
     """Classification loss only; the L2 penalty is added to the gradient."""
-    logits = model(images)
+    with _autocast(model):
+        logits = model(images)
+    logits = logits.float()
     return _classification_loss(logits, labels, mask, label_smoothing), logits
 
 
@@ -251,8 +305,12 @@ def train_step(
     gradient_clip_norm: Optional[float] = None,
     preserve_first_pass_buffers: bool = True,
     no_weight_decay_on_bn: bool = False,
+    loss_scaler: Optional[_LossScaler] = None,
 ) -> dict[str, float]:
     """Run one optimizer update over ``batches`` (a list of microbatches).
+
+    ``loss_scaler`` enables fp16 loss scaling: an update with non-finite
+    gradients is skipped and the scale is halved.
 
     Gradients of all microbatches are accumulated (weighted by their valid
     sample counts) before the update. For SAM the perturbation is computed
@@ -273,6 +331,8 @@ def train_step(
         for group in optimizer.param_groups:
             group["lr"] = learning_rate
 
+    scale = loss_scaler.scale if loss_scaler is not None else 1.0
+
     def accumulate(rng_states=None):
         """Backward over every microbatch; returns weighted loss/error."""
         loss_sum = error_sum = 0.0
@@ -283,7 +343,7 @@ def train_step(
             else:
                 _set_rng_state(rng_states[i])
             loss, logits = _loss(model, images, labels, mask, label_smoothing)
-            (loss * weight).backward()
+            (loss * (weight * scale)).backward()
             loss_sum = loss_sum + loss.detach() * weight
             error_sum = error_sum + error_rate_metric(logits.detach(), labels, mask) * weight
         return loss_sum, error_sum, states
@@ -292,8 +352,11 @@ def train_step(
     # The JAX reference uses the same PRNG key for both SAM loss evaluations.
     # Replay each microbatch's first-pass RNG state for the perturbed pass.
     loss, error_rate, first_pass_rng = accumulate()
+    skipped = loss_scaler is not None and not _unscale_gradients(model, scale)
 
-    if is_sam:
+    if skipped:
+        pass
+    elif is_sam:
         optimizer.first_step(zero_grad=True)  # adds the L2 gradient itself
         buffers = (
             [buffer.detach().clone() for buffer in model.buffers()]
@@ -305,18 +368,29 @@ def train_step(
             with torch.no_grad():
                 for buffer, saved in zip(model.buffers(), buffers):
                     buffer.copy_(saved)
-        optimizer.add_l2_gradient()
+        if loss_scaler is not None and not _unscale_gradients(model, scale):
+            skipped = True
+            optimizer.restore_weights()
+        else:
+            optimizer.add_l2_gradient()
     else:
         _add_l2_gradient(model, l2_reg, no_weight_decay_on_bn)
-    clip_limit = gradient_clip_norm if gradient_clip_norm and gradient_clip_norm > 0 else float("inf")
-    # clip_grad_norm_ returns the pre-clip norm; the logged (post-clip) norm
-    # follows from the scale it applied, so no second pass over the gradients.
-    total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_limit)
-    grad_norm = total_norm * (clip_limit / (total_norm + 1e-6)).clamp(max=1.0)
-    if is_sam:
-        optimizer.second_step(l2_already_added=True)
+
+    if skipped:
+        optimizer.zero_grad(set_to_none=True)
+        grad_norm = torch.zeros((), device=next(model.parameters()).device)
     else:
-        optimizer.step()
+        clip_limit = gradient_clip_norm if gradient_clip_norm and gradient_clip_norm > 0 else float("inf")
+        # clip_grad_norm_ returns the pre-clip norm; the logged (post-clip) norm
+        # follows from the scale it applied, so no second pass over the gradients.
+        total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_limit)
+        grad_norm = total_norm * (clip_limit / (total_norm + 1e-6)).clamp(max=1.0)
+        if is_sam:
+            optimizer.second_step(l2_already_added=True)
+        else:
+            optimizer.step()
+    if loss_scaler is not None:
+        loss_scaler.update(skipped)
 
     # Metrics stay on the device (no per-step host sync); the epoch loop
     # converts them once. ``loss`` is the classification loss on the last
@@ -338,7 +412,9 @@ def _eval_sums(model, batch, label_smoothing, top_k):
     """Metric sums and valid-sample count for one batch (device tensors)."""
     images, labels, mask = _unpack_batch(batch)
     images, labels, mask = _move_batch_to_model_device(model, images, labels, mask)
-    logits = model(images)
+    with _autocast(model):
+        logits = model(images)
+    logits = logits.float()
     count = (torch.tensor(float(images.shape[0]), device=logits.device)
              if mask is None else mask.sum().to(logits.dtype))
     sums = {
@@ -569,12 +645,25 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
     device = torch.device("cuda" if torch.cuda.is_available() else
                           "mps" if torch.backends.mps.is_available() else "cpu")
     model.to(device)
+    on_cuda = device.type == "cuda"
+    mixed_precision = str(training.get("mixed_precision", "")).lower() in ("fp16", "float16")
+    if (mixed_precision or training.get("channels_last")) and not on_cuda:
+        logging.warning("mixed_precision/channels_last need CUDA; ignored on %s", device)
+    if on_cuda:
+        torch.backends.cudnn.benchmark = bool(training.get("cudnn_benchmark", False))
+    # Read by _autocast / _move_batch_to_model_device.
+    model.amp_fp16 = mixed_precision and on_cuda
+    model.channels_last = bool(training.get("channels_last", False)) and on_cuda
+    if model.channels_last:
+        model.to(memory_format=torch.channels_last)
+    loss_scaler = _LossScaler() if model.amp_fp16 else None
     optimizer = _make_optimizer(model, optimizer_name, config, training)
     ema_decay = float(training.get("ema_decay", 0.0))
     ema = ExponentialMovingAverage(model, ema_decay) if ema_decay else None
     smooth = float(training.get("label_smoothing", 0.0))
     top_k = 5 if training.get("compute_top_5_error_rate", False) else None
     evaluate_every = int(training.get("evaluate_every", 1))
+    checkpoint_every = int(training.get("checkpoint_every", 1))
     extra_checkpoints = set(training.get("additional_checkpoints_at_epochs") or [])
 
     epochs, max_steps = training.get("epochs"), training.get("max_steps")
@@ -616,6 +705,8 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
             ema.shadow = {k: v.to(device) for k, v in state["ema"].items()}
         if scheduler is not None and state.get("scheduler") is not None:
             scheduler.load_state_dict(state["scheduler"])
+        if loss_scaler is not None and state.get("loss_scaler") is not None:
+            loss_scaler.load_state_dict(state["loss_scaler"])
         if "torch_rng" in state:
             torch.set_rng_state(state["torch_rng"].cpu())
             random.setstate(state["python_rng"])
@@ -681,9 +772,11 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
             ema=ema, log=log_epoch, label_smoothing=smooth,
             l2_reg=float(training.get("weight_decay", 0.001)),
             gradient_clip_norm=training.get("gradient_clip_norm", 5.0),
-            no_weight_decay_on_bn=bool(training.get("no_weight_decay_on_bn", False)))
+            no_weight_decay_on_bn=bool(training.get("no_weight_decay_on_bn", False)),
+            loss_scaler=loss_scaler)
         # As in JAX, evaluate only every `evaluate_every` epochs.
-        evaluate = epoch % evaluate_every == 0
+        last_epoch = epoch == epochs or (max_steps is not None and step >= int(max_steps))
+        evaluate = epoch % evaluate_every == 0 or last_epoch
         nan = float("nan")
         validation = {"loss": nan, "error_rate": nan}
         extra_metrics = {}
@@ -709,20 +802,22 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
                "epoch_seconds": duration, **extra_metrics}
         history.append(row)
         elapsed = elapsed_before + time.time() - session_started
-        _atomic_save({
-            "model": model.state_dict(), "optimizer": optimizer.state_dict(),
-            "ema": ema.shadow if ema else None,
-            "base_optimizer": (optimizer.base_optimizer.state_dict()
-                               if isinstance(optimizer, SAM) else None),
-            "scheduler": scheduler.state_dict() if scheduler else None,
-            "torch_rng": torch.get_rng_state(),
-            "python_rng": random.getstate(), "numpy_rng": np.random.get_state(),
-            "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-            "mps_rng": _get_mps_rng_state(),
-            "history": history, "started_at": started_at,
-            "elapsed_seconds": elapsed,
-            "epoch_seconds": epoch_seconds, "step": step, "epoch": epoch,
-        }, last_path)
+        if epoch % checkpoint_every == 0 or last_epoch:
+            _atomic_save({
+                "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+                "ema": ema.shadow if ema else None,
+                "base_optimizer": (optimizer.base_optimizer.state_dict()
+                                   if isinstance(optimizer, SAM) else None),
+                "scheduler": scheduler.state_dict() if scheduler else None,
+                "loss_scaler": loss_scaler.state_dict() if loss_scaler else None,
+                "torch_rng": torch.get_rng_state(),
+                "python_rng": random.getstate(), "numpy_rng": np.random.get_state(),
+                "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+                "mps_rng": _get_mps_rng_state(),
+                "history": history, "started_at": started_at,
+                "elapsed_seconds": elapsed,
+                "epoch_seconds": epoch_seconds, "step": step, "epoch": epoch,
+            }, last_path)
         with (run_dir / "train.log").open("a") as log:
             log.write(
                 "epoch={epoch} step={step} lr={learning_rate:.8g} "
@@ -742,6 +837,7 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
     # As in the JAX reference, the reported result is the final epoch's model
     # (EMA weights when EMA is on); no checkpoint is selected on validation.
     model.load_state_dict(_eval_state(model, ema))
+    model.amp_fp16 = False  # Final reported metrics are computed in fp32.
     smooth = float(training.get("label_smoothing", 0.0))
     train_loader = _plain_train_loader(data, config)
     validation_loader, test_loader = data.get_validation_loader(), data.get_test_loader()

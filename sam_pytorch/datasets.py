@@ -168,6 +168,10 @@ class _ImageNetDataModule:
         self.num_classes = self.NUM_CLASSES
         self.pin_memory = (torch.cuda.is_available()
                            if pin_memory is None else pin_memory)
+        # num_workers/pin_memory are kept for config compatibility only: the
+        # cached uint8 tensors need no worker processes.
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._tensor_cache: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
         self.train_indices, self.validation_indices = self._stratified_split(
             self._split_labels, validation_fraction, split_seed)
         self.num_training_obs = len(self.train_indices)
@@ -198,20 +202,32 @@ class _ImageNetDataModule:
         return ([train_indices[i] for i in train_order],
                 [validation_indices[i] for i in validation_order])
 
-    # Tạo DataLoader với cấu hình chung; shuffle/seed điều khiển thứ tự đọc,
-    # drop_last quyết định có bỏ batch cuối nếu batch đó thiếu mẫu hay không.
-    def _loader(self, dataset: Dataset, *, shuffle: bool, seed: int,
-                drop_last: bool = False) -> DataLoader:
-        return DataLoader(
-            dataset, batch_size=self.batch_size, shuffle=shuffle,
-            drop_last=drop_last, num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            generator=torch.Generator().manual_seed(seed),
-            persistent_workers=False)
+    # Ảnh đã tiền xử lý (uint8) được nạp một lần rồi giữ trong bộ nhớ, nên không
+    # cần DataLoader/worker: mỗi epoch chỉ là chọn chỉ số và chuẩn hóa trên GPU.
+    def _batches(self, dataset: Dataset, indices: Optional[list[int]], *,
+                 shuffle: bool, seed: int, drop_last: bool,
+                 on_device: bool) -> "_TensorBatches":
+        key = id(dataset)
+        if key not in self._tensor_cache:
+            parts = (dataset.datasets if isinstance(dataset, ConcatDataset)
+                     else [dataset])
+            images = torch.cat([part.uint8_tensors() for part in parts])
+            if on_device:
+                images = images.to(self.device)
+            labels = torch.tensor([label for part in parts
+                                   for label in part._labels])
+            self._tensor_cache[key] = (images, labels)
+        images, labels = self._tensor_cache[key]
+        if indices is None:
+            indices = list(range(len(labels)))
+        return _TensorBatches(
+            images, labels, torch.as_tensor(indices, device=images.device),
+            self.batch_size, shuffle=shuffle, seed=seed, drop_last=drop_last,
+            device=self.device)
 
     def get_train_loader(self, seed: int = 1,
-                         drop_last: bool = True) -> DataLoader:
-        """Trả DataLoader cho tập train, có xáo trộn theo ``seed``.
+                         drop_last: bool = True) -> "_TensorBatches":
+        """Trả các batch của tập train, xáo trộn theo ``seed``.
 
         Mặc định bỏ batch cuối thiếu mẫu, giống ``floor(N / batch_size)`` của
         bản JAX; truyền ``drop_last=False`` khi đánh giá toàn bộ tập train.
@@ -219,32 +235,85 @@ class _ImageNetDataModule:
         Ảnh đã được tiền xử lý theo ImageNet; các chỉ số lấy từ lần chia cố định
         khi khởi tạo module.
         """
-        return self._loader(
-            Subset(self._train_dataset, self.train_indices),
-            shuffle=True, seed=seed, drop_last=drop_last)
+        return self._batches(self._train_dataset, self.train_indices,
+                             shuffle=True, seed=seed, drop_last=drop_last,
+                             on_device=True)
 
-    def get_validation_loader(self) -> DataLoader:
-        """Trả DataLoader validation, đọc tuần tự để đánh giá ổn định."""
-        return self._loader(Subset(self._train_dataset,
-                                   self.validation_indices),
-                            shuffle=False, seed=0)
+    def get_validation_loader(self) -> "_TensorBatches":
+        """Trả các batch validation, đọc tuần tự để đánh giá ổn định."""
+        return self._batches(self._train_dataset, self.validation_indices,
+                             shuffle=False, seed=0, drop_last=False,
+                             on_device=True)
 
-    def get_test_loader(self) -> DataLoader:
-        """Trả DataLoader của partition test chính thức, không xáo trộn."""
-        return self._loader(self._test_dataset, shuffle=False, seed=0)
+    def get_test_loader(self) -> "_TensorBatches":
+        """Trả các batch của partition test chính thức, không xáo trộn.
+
+        Tập test lớn hơn nhiều và chỉ dùng một lần ở cuối, nên giữ trên CPU.
+        """
+        return self._batches(self._test_dataset, None, shuffle=False, seed=0,
+                             drop_last=False, on_device=False)
+
+
+class _TensorBatches:
+    """Iterate normalized ``(images, labels)`` batches from a uint8 tensor.
+
+    Replaces a ``DataLoader`` over the deterministic (augmentation-free)
+    pipeline: the shuffle order matches ``DataLoader(shuffle=True,
+    generator=manual_seed(seed))``, and uint8 -> /255 -> mean/std
+    normalization is done on ``device``, as ``ToTensor`` + ``Normalize`` did.
+    """
+
+    MEAN = (0.485, 0.456, 0.406)
+    STD = (0.229, 0.224, 0.225)
+
+    def __init__(self, images: torch.Tensor, labels: torch.Tensor,
+                 indices: torch.Tensor, batch_size: int, *, shuffle: bool,
+                 seed: int, drop_last: bool, device: torch.device):
+        self.images, self.labels, self.indices = images, labels, indices
+        self.batch_size, self.shuffle, self.seed = batch_size, shuffle, seed
+        self.drop_last, self.device = drop_last, device
+
+    @property
+    def dataset(self) -> torch.Tensor:
+        """Sized stand-in for ``DataLoader.dataset`` (sample count reporting)."""
+        return self.indices
+
+    def __len__(self) -> int:
+        count = len(self.indices)
+        if self.drop_last:
+            return count // self.batch_size
+        return -(-count // self.batch_size)
+
+    def __iter__(self):
+        count = len(self.indices)
+        if self.shuffle:
+            generator = torch.Generator().manual_seed(self.seed)
+            # DataLoader draws its worker base seed from the generator first.
+            torch.empty((), dtype=torch.int64).random_(generator=generator)
+            order = torch.randperm(count, generator=generator)
+            order = order.to(self.indices.device)
+        else:
+            order = torch.arange(count, device=self.indices.device)
+        mean = torch.tensor(self.MEAN, device=self.device).view(1, 3, 1, 1)
+        std = torch.tensor(self.STD, device=self.device).view(1, 3, 1, 1)
+        for batch in range(len(self)):
+            picked = self.indices[order[batch * self.batch_size:
+                                        (batch + 1) * self.batch_size]]
+            images = self.images[picked].to(self.device, non_blocking=True)
+            images = (images.float().div_(255) - mean) / std
+            labels = self.labels[picked.cpu()].to(self.device)
+            yield images, labels
 
 
 def _imagenet_transform() -> transforms.Compose:
     """Tạo pipeline biến đổi ảnh dùng cho các dataset fine-tuning.
 
-    Ảnh được crop/resize về 224×224, đổi thành tensor rồi chuẩn hóa theo
-    mean và độ lệch chuẩn ImageNet.
+    Ảnh được crop/resize về 224×224 và giữ dạng tensor uint8; việc chia 255 và
+    chuẩn hóa theo mean/độ lệch chuẩn ImageNet do ``_TensorBatches`` làm trên GPU.
     """
     return transforms.Compose((
         _SAMCenterCrop(224),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=(0.485, 0.456, 0.406),
-                             std=(0.229, 0.224, 0.225)),
+        transforms.PILToTensor(),
     ))
 
 
@@ -314,6 +383,21 @@ class _HFImageDataset(Dataset):
             json.dumps({"labels": labels, "files": files,
                         "class_names": _hf_label_names(repo_id,
                                                        parquet_files[0])}))
+
+    def uint8_tensors(self) -> torch.Tensor:
+        """All transformed images as one uint8 tensor, cached on disk.
+
+        Only valid when ``transform`` returns a uint8 tensor. The decode +
+        crop + resize pass runs once and is reused by later runs.
+        """
+        path = self.cache_dir / "tensors_224.pt"
+        if path.exists():
+            return torch.load(path)
+        images = torch.stack([self[i][0] for i in range(len(self))])
+        temporary = path.with_suffix(".tmp")
+        torch.save(images, temporary)
+        temporary.replace(path)
+        return images
 
     def __len__(self) -> int:
         return len(self._files)
