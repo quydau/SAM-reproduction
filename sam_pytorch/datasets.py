@@ -108,8 +108,9 @@ class CIFAR10DataModule:
             pin_memory=self.pin_memory,
             generator=generator,
             collate_fn=_BatchCollator(self.augmentation, enabled=cutout),
-            # Giữ worker sống giữa các epoch; chỉ bật khi thực sự có worker.
-            persistent_workers=self.num_workers > 0,
+            # Loader được tạo mới mỗi epoch/lần eval nên không giữ worker sống,
+            # tránh rò rỉ pipe/file descriptor ("Too many open files").
+            persistent_workers=False,
         )
 
     def get_train_loader(self, use_augmentations: bool = True,
@@ -206,7 +207,7 @@ class _ImageNetDataModule:
             drop_last=drop_last, num_workers=self.num_workers,
             pin_memory=self.pin_memory,
             generator=torch.Generator().manual_seed(seed),
-            persistent_workers=self.num_workers > 0)
+            persistent_workers=False)
 
     def get_train_loader(self, seed: int = 1,
                          drop_last: bool = True) -> DataLoader:

@@ -19,7 +19,7 @@ training:
   effective_batch_size: 1024
   epochs: null
   max_steps: 5000 # Paper's C.2: 5k steps at batch 1024.
-  num_workers: 8
+  num_workers: 4
   learning_rate: 0.016 # Paper C.2 value for batch 1024.
   scheduler: cosine
   weight_decay: 0.00001
