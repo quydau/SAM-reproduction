@@ -7,6 +7,7 @@ from typing import Optional
 import torch
 from torch.utils.data import (ConcatDataset, DataLoader, Dataset, Subset,
                               default_collate)
+import torch.nn.functional as F
 from torchvision import transforms
 from torchvision.transforms import functional as TF
 from torchvision.transforms import InterpolationMode
@@ -30,6 +31,82 @@ class _BatchCollator:
             # Cutout cần tensor cả batch nên được áp dụng sau khi ghép ảnh.
             images = self.augmentation.apply_cutout(images)
         return images, labels
+
+
+class _CIFARTensorBatches:
+    """Iterate ``(images, labels)`` batches from CIFAR uint8 tensors on-device.
+
+    Replaces the PIL/DataLoader pipeline for the none/basic/cutout conditions:
+    horizontal flip, reflect-padded random crop, normalization and batch Cutout
+    run on ``device``. Shuffle order matches ``DataLoader(shuffle=True,
+    generator=manual_seed(seed))``; per-image flip/crop draws come from the same
+    generator, so a given seed is reproducible (but not bit-identical to PIL).
+    """
+
+    def __init__(self, images: torch.Tensor, labels: torch.Tensor,
+                 indices: torch.Tensor, batch_size: int, *, shuffle: bool,
+                 seed: int, drop_last: bool, augmentation: CIFAR10Augmentation,
+                 mean: tuple, std: tuple, crop_padding: int, flip: float,
+                 augment: bool):
+        self.images, self.labels, self.indices = images, labels, indices
+        self.batch_size, self.shuffle, self.seed = batch_size, shuffle, seed
+        self.drop_last, self.augmentation = drop_last, augmentation
+        self.crop_padding, self.flip, self.augment = crop_padding, flip, augment
+        device = images.device
+        self.mean = torch.tensor(mean, device=device).view(1, 3, 1, 1)
+        self.std = torch.tensor(std, device=device).view(1, 3, 1, 1)
+
+    @property
+    def dataset(self) -> torch.Tensor:
+        """Sized stand-in for ``DataLoader.dataset`` (sample count reporting)."""
+        return self.indices
+
+    def __len__(self) -> int:
+        count = len(self.indices)
+        if self.drop_last:
+            return count // self.batch_size
+        return -(-count // self.batch_size)
+
+    def _augment(self, images: torch.Tensor,
+                 generator: torch.Generator) -> torch.Tensor:
+        count, device = images.shape[0], images.device
+        flipped = torch.rand(count, generator=generator) < self.flip
+        images = torch.where(flipped.to(device).view(-1, 1, 1, 1),
+                             images.flip(3), images)
+        pad = self.crop_padding
+        if pad:
+            size = images.shape[-1]
+            padded = F.pad(images, (pad,) * 4, mode="reflect")
+            offsets = torch.randint(0, 2 * pad + 1, (2, count),
+                                    generator=generator).to(device)
+            span = torch.arange(size, device=device)
+            rows = (offsets[0].view(-1, 1) + span).view(count, 1, size, 1)
+            cols = (offsets[1].view(-1, 1) + span).view(count, 1, 1, size)
+            batch = torch.arange(count, device=device).view(count, 1, 1, 1)
+            channel = torch.arange(images.shape[1], device=device).view(1, -1, 1, 1)
+            images = padded[batch, channel, rows, cols]
+        return images
+
+    def __iter__(self):
+        count = len(self.indices)
+        generator = torch.Generator().manual_seed(self.seed)
+        if self.shuffle:
+            # DataLoader draws its worker base seed from the generator first.
+            torch.empty((), dtype=torch.int64).random_(generator=generator)
+            order = torch.randperm(count, generator=generator)
+        else:
+            order = torch.arange(count)
+        order = order.to(self.indices.device)
+        for batch in range(len(self)):
+            picked = self.indices[order[batch * self.batch_size:
+                                        (batch + 1) * self.batch_size]]
+            images = self.images[picked].float().div_(255)
+            if self.augment:
+                images = self._augment(images, generator)
+            images = (images - self.mean) / self.std
+            if self.augment:
+                images = self.augmentation.apply_cutout(images)
+            yield images, self.labels[picked]
 
 
 class CIFAR10DataModule:
@@ -86,6 +163,13 @@ class CIFAR10DataModule:
             root=str(self.data_root), train=False, download=True,
             transform=plain.image_transform)
         self.class_names = list(self._test.classes)
+        # AutoAugment is PIL-only, so it keeps the DataLoader path; the other
+        # conditions run entirely on tensors cached on the device.
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._gpu_pipeline = augmentation != "autoaugment"
+        self._crop_padding = crop_padding
+        self._flip = horizontal_flip_probability
+        self._tensors: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
 
         # Tạo phép chia có thể tái lập: cùng seed sẽ cho cùng train/validation indices.
         split_generator = torch.Generator().manual_seed(validation_seed)
@@ -113,9 +197,29 @@ class CIFAR10DataModule:
             persistent_workers=False,
         )
 
-    def get_train_loader(self, use_augmentations: bool = True,
-                         seed: int = 1) -> DataLoader:
+    def _tensor_batches(self, source, indices: list[int], *, shuffle: bool,
+                        drop_last: bool, seed: int, augment: bool,
+                        batch_size: Optional[int] = None) -> _CIFARTensorBatches:
+        key = id(source)
+        if key not in self._tensors:
+            images = torch.from_numpy(source.data).permute(0, 3, 1, 2).contiguous()
+            self._tensors[key] = (images.to(self.device),
+                                  torch.tensor(source.targets).to(self.device))
+        images, labels = self._tensors[key]
+        return _CIFARTensorBatches(
+            images, labels, torch.as_tensor(indices, device=self.device),
+            batch_size or self.batch_size, shuffle=shuffle, seed=seed,
+            drop_last=drop_last, augmentation=self.augmentation,
+            mean=self.MEAN, std=self.STD, crop_padding=self._crop_padding,
+            flip=self._flip, augment=augment and self.augmentation.name != "none")
+
+    def get_train_loader(self, use_augmentations: bool = True, seed: int = 1):
         """Return train data, dropping an incomplete batch for training."""
+        if self._gpu_pipeline:
+            return self._tensor_batches(
+                self._train_augmented, self.train_indices, shuffle=True,
+                drop_last=use_augmentations, seed=seed,
+                augment=use_augmentations)
         # Subset chọn đúng các chỉ số đã phân vào train, không gồm validation.
         source = self._train_augmented if use_augmentations else self._train_plain
         dataset = Subset(source, self.train_indices)
@@ -124,14 +228,22 @@ class CIFAR10DataModule:
                             drop_last=use_augmentations, seed=seed,
                             cutout=use_augmentations)
 
-    def get_validation_loader(self) -> DataLoader:
+    def get_validation_loader(self):
         """Return the fixed validation split without augmentation."""
+        if self._gpu_pipeline:
+            return self._tensor_batches(
+                self._train_plain, self.validation_indices, shuffle=False,
+                drop_last=False, seed=0, augment=False)
         # Validation dùng ảnh nguyên bản, đọc tuần tự và giữ lại toàn bộ mẫu.
         dataset = Subset(self._train_plain, self.validation_indices)
         return self._loader(dataset, shuffle=False, drop_last=False, seed=0)
 
-    def get_test_loader(self) -> DataLoader:
+    def get_test_loader(self):
         """Return the official test split without augmentation."""
+        if self._gpu_pipeline:
+            return self._tensor_batches(
+                self._test, list(range(len(self._test))), shuffle=False,
+                drop_last=False, seed=0, augment=False)
         # Giới hạn batch test tối đa 32 để giảm bộ nhớ khi đánh giá.
         return self._loader(
             self._test, shuffle=False, drop_last=False, seed=0,
@@ -370,7 +482,8 @@ class _HFImageDataset(Dataset):
         labels, files = [], []
         for name in parquet_files:
             path = hf_hub_download(repo_id, name, repo_type="dataset")
-            for batch in pq.ParquetFile(path).iter_batches(batch_size=256):
+            for batch in pq.ParquetFile(path).iter_batches(
+                    batch_size=256, columns=["image", "label"]):
                 for row in batch.to_pylist():
                     data = row["image"]["bytes"]
                     ext = "png" if data[:4] == b"\x89PNG" else "jpg"
@@ -480,3 +593,37 @@ class OxfordIIITPetDataModule(_ImageNetDataModule):
                          split_seed, num_workers, pin_memory)
         self.class_names = [" ".join(part.title() for part in name.split("_"))
                             for name in self._train_dataset.class_names]
+
+
+class FGVCAircraftDataModule(_ImageNetDataModule):
+    """FGVC Aircraft (nhãn variant, 100 lớp) với split train/validation cố định.
+
+    Dữ liệu lấy từ mirror ``Multimodal-Fatima/FGVC_Aircraft_{train,test}``:
+    split ``train`` chính thức (3334 ảnh) được chia theo từng lớp (mặc định
+    90/10) thành train/validation, test chính thức (3333 ảnh) được giữ riêng.
+    Mirror này không có split ``val`` chính thức nên không gộp thêm.
+    """
+
+    NUM_CLASSES = 100
+    REPO = "Multimodal-Fatima/FGVC_Aircraft"
+
+    def __init__(self, data_root: str | Path, batch_size: int,
+                 validation_fraction: float = 0.1, split_seed: int = 1,
+                 num_workers: int = 4, pin_memory: Optional[bool] = None):
+        self.data_root = Path(data_root)
+        transform = _imagenet_transform()
+        cache = self.data_root / "fgvc-aircraft-hf"
+        self._train_dataset = _HFImageDataset(
+            f"{self.REPO}_train",
+            ["data/train-00000-of-00002-8e8c2fac664e9852.parquet",
+             "data/train-00001-of-00002-367db3639819cbee.parquet"],
+            cache / "train", transform)
+        self._test_dataset = _HFImageDataset(
+            f"{self.REPO}_test",
+            ["data/test-00000-of-00002-f701e149b12ef922.parquet",
+             "data/test-00001-of-00002-995f2f92aa55f647.parquet"],
+            cache / "test", transform)
+        self._split_labels = list(self._train_dataset._labels)
+        super().__init__(data_root, batch_size, validation_fraction,
+                         split_seed, num_workers, pin_memory)
+        self.class_names = self._train_dataset.class_names

@@ -1,4 +1,4 @@
-"""Fine-tune EfficientNet-B0 on Flowers102 or Oxford-IIIT Pet."""
+"""Fine-tune EfficientNet-B0 on Flowers102, Oxford-IIIT Pet or FGVC Aircraft."""
 
 import argparse
 import copy
@@ -7,7 +7,8 @@ import logging
 import time
 from pathlib import Path
 
-from sam_pytorch.datasets import (Flowers102DataModule,
+from sam_pytorch.datasets import (FGVCAircraftDataModule,
+                                  Flowers102DataModule,
                                   OxfordIIITPetDataModule)
 from sam_pytorch.models import create_model
 from sam_pytorch.train_utils import load_config, seed_everything, train
@@ -33,6 +34,8 @@ def run(config, optimizer, seed, args) -> None:
         data = Flowers102DataModule(**common)
     elif config["dataset"] == "oxford_iiit_pet":
         data = OxfordIIITPetDataModule(**common)
+    elif config["dataset"] == "fgvc_aircraft":
+        data = FGVCAircraftDataModule(**common)
     else:
         raise ValueError(f"Unsupported fine-tuning dataset: {config['dataset']}")
 
@@ -48,7 +51,7 @@ def run(config, optimizer, seed, args) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True,
-                        help="Flowers102 or Oxford-IIIT Pet YAML config")
+                        help="Flowers102, Oxford-IIIT Pet or FGVC Aircraft YAML config")
     parser.add_argument("--optimizer", nargs="+", choices=("sgd", "sam"), required=True,
                         help="One or more optimizers; each runs in turn")
     parser.add_argument("--seed", nargs="+", type=int,

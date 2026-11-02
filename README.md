@@ -43,6 +43,7 @@ python -m sam_pytorch.train --config configs/cifar10_wrn16x8.yaml --augmentation
 python -m sam_pytorch.train --config configs/cifar100_wrn16x8.yaml --augmentation basic --optimizer sam --seed 1
 python -m sam_pytorch.finetune --config configs/flowers102_efficientnet_b0.yaml --optimizer sgd --seed 1
 python -m sam_pytorch.finetune --config configs/oxford_iiit_pet_efficientnet_b0.yaml --optimizer sam --seed 2
+python -m sam_pytorch.finetune --config configs/fgvc_aircraft_efficientnet_b0.yaml --optimizer sgd sam --seed 1
 
 # Nhiều giá trị trong một lệnh (tuần tự): 3 seed x 3 augmentation x 2 optimizer = 18 run
 python -m sam_pytorch.train --config configs/cifar10_wrn16x8.yaml \

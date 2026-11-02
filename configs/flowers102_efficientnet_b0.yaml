@@ -11,16 +11,16 @@ split:
   seed: 1
 
 training:
-  # Tesla T4 (16 GB, fp16): effective batch 1024 via 256 x 4 accumulation.
+  # RTX 3080 (10 GB, fp16): effective batch 1024 via 64 x 16 accumulation.
   # BatchNorm statistics are frozen, so microbatch size does not change results.
-  # If CUDA OOM occurs with SAM, use 128 x 8 (or 64 x 16); note this changes how
-  # the epoch remainder is dropped when the train size is not a multiple of 1024.
-  batch_size: 128
-  gradient_accumulation_steps: 8
+  # EfficientNet-B0 at 224px with SAM (two passes) is near 10 GB at 128; 64 is safe.
+  # On the 12 GB variant you may try 128 x 8 for slightly higher throughput.
+  batch_size: 64
+  gradient_accumulation_steps: 16
   effective_batch_size: 1024
   epochs: null
   max_steps: 5000 # Paper's C.2: 5k steps at batch 1024.
-  mixed_precision: fp16 # CUDA fp16 autocast + dynamic loss scaling (T4 has no bf16). Set false for fp32.
+  mixed_precision: fp16 # CUDA fp16 autocast + dynamic loss scaling (bf16 also works on Ampere). Set false for fp32.
   channels_last: true # Faster convolutions on tensor cores.
   cudnn_benchmark: true # Autotune conv kernels (fixed input shapes).
   learning_rate: 0.016 # Paper C.2 value for batch 1024.
@@ -37,7 +37,7 @@ training:
 sam:
   rho: 0.05
 
-pretrained_weights: IMAGENET1K_V1 # RTX 3090-friendly B0 substitute; paper fine-tunes EffNet-B7/L2.
+pretrained_weights: IMAGENET1K_V1 # RTX 3080-friendly B0 substitute; paper fine-tunes EffNet-B7/L2.
 replace_classifier: true
 image:
   crop_size: 224

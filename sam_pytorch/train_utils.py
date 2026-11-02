@@ -578,7 +578,7 @@ def _classification_results(model, batches, class_names, label_smoothing=0.0):
     names = list(class_names)
     accuracy = sum(a == b for a, b in zip(targets, predictions)) / max(len(targets), 1)
     report = classification_report(targets, predictions, labels=list(range(len(names))),
-                                   target_names=names, zero_division=0)
+                                   target_names=names, zero_division=0, digits=4)
     return {"loss": loss_sum / max(len(targets), 1), "accuracy": accuracy,
             "error": 1.0 - accuracy}, report
 
@@ -861,9 +861,7 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
              "[data]", f"train_samples: {len(train_loader.dataset)}",
              f"validation_samples: {len(validation_loader.dataset)}",
              f"test_samples: {len(test_loader.dataset)}", f"num_classes: {len(data.class_names)}",
-             "classes_by_index: " + ", ".join(f"{i}={name}" for i, name in enumerate(data.class_names)), "",
-             "[epoch_metrics]", "epoch,step,learning_rate,train_loss,train_error_rate,validation_loss,val_error_rate,epoch_seconds"]
-    lines.extend(",".join(str(row[key]) for key in ("epoch", "step", "learning_rate", "train_loss", "train_error_rate", "validation_loss", "val_error_rate", "epoch_seconds")) for row in history)
+             "classes_by_index: " + ", ".join(f"{i}={name}" for i, name in enumerate(data.class_names))]
     lines.extend(["", "[checkpoint]", "last_checkpoint: last.pt",
                   "final_evaluation_checkpoint: last epoch (no best-checkpoint selection)",
                   "", "[train_metrics]"])

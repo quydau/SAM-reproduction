@@ -18,7 +18,10 @@ training:
   batch_size: 256
   gradient_accumulation_steps: 1
   effective_batch_size: 256
-  num_workers: 4
+  num_workers: 2 # Only used by the AutoAugment (PIL) pipeline; other conditions augment on the GPU.
+  mixed_precision: fp16 # CUDA fp16 autocast + dynamic loss scaling. Set false for fp32.
+  channels_last: true # Faster convolutions on tensor cores.
+  cudnn_benchmark: true # Autotune conv kernels (fixed input shapes).
   learning_rate: 0.1
   scheduler: cosine
   weight_decay: 0.0005
@@ -26,6 +29,8 @@ training:
   nesterov: true # Explicit in the official repo's SGD optimizer.
   label_smoothing: 0.0 # Official repo default; smoothing branch is skipped at zero.
   gradient_clip_norm: 5.0 # Official repo default, applied after gradient synchronization.
+  evaluate_every: 5 # Validate sparsely; the last epoch is always evaluated.
+  checkpoint_every: 10 # Resume checkpoint (last.pt) interval; the last epoch is always saved.
 
 sam:
   rho: 0.05
