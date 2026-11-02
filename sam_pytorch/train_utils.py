@@ -406,6 +406,7 @@ def train_for_one_epoch(
     accumulation_steps: int = 1,
     freeze_batch_norm_statistics: bool = False,
     ema: Optional[ExponentialMovingAverage] = None,
+    log: bool = True,
     **step_kwargs,
 ):
     """Train for one epoch, average batch metrics, and optionally log them.
@@ -449,11 +450,12 @@ def train_for_one_epoch(
         for name, value in averages.items():
             summary_writer.add_scalar(name, value, step)
         summary_writer.flush()
-    logging.info(
-        "Whole training epoch done in %.2f seconds (%d steps)",
-        time.time() - start_time,
-        count,
-    )
+    if log:
+        logging.info(
+            "Whole training epoch done in %.2f seconds (%d steps)",
+            time.time() - start_time,
+            count,
+        )
     return averages, step
 
 
@@ -556,8 +558,11 @@ def _write_epoch_metrics(run_dir: Path, history: list[dict]) -> None:
 
 
 def train(model: nn.Module, data, config: dict, optimizer_name: str,
-          run_dir: str | Path) -> dict:
-    """Train with automatic epoch checkpoint recovery and write run reports."""
+          run_dir: str | Path, log_every: int = 1) -> dict:
+    """Train with automatic epoch checkpoint recovery and write run reports.
+
+    Progress is logged every ``log_every`` epochs (and on the final epoch).
+    """
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     training = config["training"]
@@ -666,13 +671,14 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
                           "ema": ema.shadow if ema else None, "epoch": epoch - 1,
                           "step": step}, run_dir / f"additional_ckpt_{epoch - 1}.pt")
         tick = time.time()
+        log_epoch = epoch % log_every == 0 or epoch == epochs
         batches = data.get_train_loader(seed=int(config.get("seed", 1)) + epoch)
         remaining = None if max_steps is None else max(0, int(max_steps) - step)
         train_metrics, step = train_for_one_epoch(
             model, optimizer, batches, step=step, scheduler=scheduler, max_steps=remaining,
             accumulation_steps=accumulation,
             freeze_batch_norm_statistics=bool(training.get("freeze_batch_norm_statistics", False)),
-            ema=ema, label_smoothing=smooth,
+            ema=ema, log=log_epoch, label_smoothing=smooth,
             l2_reg=float(training.get("weight_decay", 0.001)),
             gradient_clip_norm=training.get("gradient_clip_norm", 5.0),
             no_weight_decay_on_bn=bool(training.get("no_weight_decay_on_bn", False)))
@@ -727,7 +733,9 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
                 "seconds={epoch_seconds:.1f}\n".format(**row)
             )
         _write_epoch_metrics(run_dir, history)
-        logging.info("epoch=%d step=%d val_error_rate=%.4f", epoch, step, row["val_error_rate"])
+        if log_epoch:
+            logging.info("epoch=%d/%d step=%d val_error_rate=%.4f epoch_seconds=%.1f",
+                         epoch, epochs, step, row["val_error_rate"], duration)
         if max_steps is not None and step >= int(max_steps):
             break
 

@@ -4,6 +4,7 @@ import argparse
 import copy
 import itertools
 import logging
+import time
 from pathlib import Path
 
 from sam_pytorch.datasets import (Flowers102DataModule,
@@ -41,7 +42,7 @@ def run(config, optimizer, seed, args) -> None:
     run_dir = (Path(config.get("output_root", "outputs"))
                / config["dataset"] / config["model"] / optimizer
                / f"seed_{config['seed']}")
-    train(model, data, config, optimizer, run_dir)
+    train(model, data, config, optimizer, run_dir, log_every=args.log_every)
 
 
 def main() -> None:
@@ -52,6 +53,8 @@ def main() -> None:
                         help="One or more optimizers; each runs in turn")
     parser.add_argument("--seed", nargs="+", type=int,
                         help="One or more seeds (default: config.seed)")
+    parser.add_argument("--log-every", type=int, default=10,
+                        help="Log progress every N epochs (default: 10)")
     limits = parser.add_mutually_exclusive_group()
     limits.add_argument("--epochs", type=int, help="Override training.epochs (quick run)")
     limits.add_argument("--steps", type=int, help="Override training.max_steps (quick run)")
@@ -66,8 +69,11 @@ def main() -> None:
     combos = list(itertools.product(
         dict.fromkeys(seeds), dict.fromkeys(args.optimizer)))
     for i, (seed, optimizer) in enumerate(combos, 1):
-        print(f"[{i}/{len(combos)}] seed={seed} optimizer={optimizer}", flush=True)
+        print(f"[{i}/{len(combos)}] START seed={seed} optimizer={optimizer}", flush=True)
+        start = time.time()
         run(config, optimizer, seed, args)
+        print(f"[{i}/{len(combos)}] DONE seed={seed} optimizer={optimizer} "
+              f"in {time.time() - start:.1f}s", flush=True)
 
 
 if __name__ == "__main__":

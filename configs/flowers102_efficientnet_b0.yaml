@@ -11,16 +11,16 @@ split:
   seed: 1
 
 training:
-  # T4 (16 GB, fp32) tuning: effective batch 256 via 64 x 4 accumulation.
+  # RTX 3090 (24 GB, fp32) tuning: effective batch 1024 via 256 x 4 accumulation.
   # BatchNorm statistics are frozen, so microbatch size does not change results.
-  # If CUDA OOM occurs with SAM, use 32 x 8.
-  batch_size: 64
+  # If CUDA OOM occurs with SAM, use 128 x 8 (or 64 x 16).
+  batch_size: 256
   gradient_accumulation_steps: 4
-  effective_batch_size: 256
+  effective_batch_size: 1024
   epochs: null
-  max_steps: 20000 # Paper's 5k steps at batch 1024, exposure-matched to batch 256.
-  num_workers: 4
-  learning_rate: 0.004 # Inferred linear scaling from C.2: 0.016 @1024, 0.008 @512.
+  max_steps: 5000 # Paper's C.2: 5k steps at batch 1024.
+  num_workers: 8
+  learning_rate: 0.016 # Paper C.2 value for batch 1024.
   scheduler: cosine
   weight_decay: 0.00001
   momentum: 0.9
@@ -32,7 +32,7 @@ training:
 sam:
   rho: 0.05
 
-pretrained_weights: IMAGENET1K_V1 # T4-friendly B0 substitute; paper fine-tunes EffNet-B7/L2.
+pretrained_weights: IMAGENET1K_V1 # RTX 3090-friendly B0 substitute; paper fine-tunes EffNet-B7/L2.
 replace_classifier: true
 image:
   crop_size: 224
@@ -44,6 +44,6 @@ image:
 
 # C.2 reports no augmentation; train/validation/test share deterministic
 # center-crop, bicubic resize, and ImageNet normalization preprocessing.
-# Batch-256 LR, B0 weights/resolution, and 20k-step exposure match are adaptations.
+# Only B0 weights/resolution are adaptations; batch, LR, and steps follow C.2.
 
 output_root: outputs

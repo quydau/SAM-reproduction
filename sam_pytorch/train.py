@@ -4,6 +4,7 @@ import argparse
 import copy
 import itertools
 import logging
+import time
 from pathlib import Path
 
 from sam_pytorch.datasets import CIFAR10DataModule, CIFAR100DataModule
@@ -73,9 +74,12 @@ def main() -> None:
     combos = list(itertools.product(
         dict.fromkeys(seeds), dict.fromkeys(augmentations), dict.fromkeys(args.optimizer)))
     for i, (seed, augmentation, optimizer) in enumerate(combos, 1):
-        print(f"[{i}/{len(combos)}] seed={seed} augmentation="
-              f"{augmentation or config['augmentation']} optimizer={optimizer}", flush=True)
+        label = (f"seed={seed} augmentation={augmentation or config['augmentation']} "
+                 f"optimizer={optimizer}")
+        print(f"[{i}/{len(combos)}] START {label}", flush=True)
+        start = time.time()
         run(config, optimizer, augmentation, seed, args)
+        print(f"[{i}/{len(combos)}] DONE {label} in {time.time() - start:.1f}s", flush=True)
 
 
 if __name__ == "__main__":
