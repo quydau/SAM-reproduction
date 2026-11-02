@@ -26,7 +26,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torchvision
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report, f1_score
 from torch import nn
 
 from sam_pytorch.optimizers import SAM, ExponentialMovingAverage, RMSProp
@@ -579,8 +579,10 @@ def _classification_results(model, batches, class_names, label_smoothing=0.0):
     accuracy = sum(a == b for a, b in zip(targets, predictions)) / max(len(targets), 1)
     report = classification_report(targets, predictions, labels=list(range(len(names))),
                                    target_names=names, zero_division=0, digits=4)
+    f1_macro = f1_score(targets, predictions, labels=list(range(len(names))),
+                        average="macro", zero_division=0)
     return {"loss": loss_sum / max(len(targets), 1), "accuracy": accuracy,
-            "error": 1.0 - accuracy}, report
+            "f1_macro": float(f1_macro), "error": 1.0 - accuracy}, report
 
 
 def _make_optimizer(model, optimizer_name: str, config: dict, training: dict):
