@@ -10,6 +10,7 @@ from pathlib import Path
 from sam_pytorch.datasets import (FGVCAircraftDataModule,
                                   Flowers102DataModule,
                                   OxfordIIITPetDataModule,
+                                  CIFAR100DataModule,
                                   StanfordCarsDataModule)
 from sam_pytorch.models import create_model
 from sam_pytorch.train_utils import load_config, seed_everything, train
@@ -31,7 +32,15 @@ def run(config, optimizer, seed, args) -> None:
         validation_fraction=float(split.get("validation_fraction", 0.1)),
         split_seed=int(split.get("seed", config["seed"])),
         num_workers=int(training.get("num_workers", 0)))
-    if config["dataset"] == "flowers102":
+    if config["dataset"] == "cifar100":
+        # Keep the existing CIFAR-100 split/loader; this run only adds a model.
+        data = CIFAR100DataModule(
+            data_root=config["data_root"],
+            batch_size=int(training["batch_size"]),
+            augmentation="none",
+            validation_seed=int(split.get("seed", config["seed"])),
+            num_workers=int(training.get("num_workers", 0)))
+    elif config["dataset"] == "flowers102":
         data = Flowers102DataModule(**common)
     elif config["dataset"] == "oxford_iiit_pet":
         data = OxfordIIITPetDataModule(**common)

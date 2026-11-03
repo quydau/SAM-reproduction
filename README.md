@@ -10,6 +10,7 @@ Các nhóm thực nghiệm theo kế hoạch:
 
 - CIFAR-10 và CIFAR-100, WRN-16-8 huấn luyện từ đầu với `basic`, `cutout`, `autoaugment`.
 - Fine-tune EfficientNet-B0 trên Flowers102, Oxford-IIIT Pet, FGVC Aircraft và Stanford Cars.
+- Fine-tune thêm EfficientNet-B0 trên CIFAR-100 với cùng recipe EfficientNet.
 - Ba seed ghép cặp giữa SGD và SAM cho mỗi điều kiện; chọn checkpoint trên validation rồi đánh giá test một lần.
 
 Paper báo cáo năm lần chạy độc lập cho fine-tuning. Ba seed hiện dùng là giới hạn phạm vi đồ án; vì vậy độ bất định thống kê sẽ khác paper. Ngoài ra, paper fine-tune EfficientNet-B7 và EfficientNet-L2 với checkpoint công khai, trong khi cấu hình T4 ở đây dùng EfficientNet-B0 với weights ImageNet từ torchvision. Đây là tái lập có điều chỉnh về mô hình/phần cứng, không phải kết quả số học tương đương với thí nghiệm gốc.
@@ -46,6 +47,7 @@ python -m sam_pytorch.finetune --config configs/flowers102_efficientnet_b0.yaml 
 python -m sam_pytorch.finetune --config configs/oxford_iiit_pet_efficientnet_b0.yaml --optimizer sam --seed 2
 python -m sam_pytorch.finetune --config configs/fgvc_aircraft_efficientnet_b0.yaml --optimizer sgd sam --seed 1
 python -m sam_pytorch.finetune --config configs/stanford_cars_efficientnet_b0.yaml --optimizer sam --seed 1
+python -m sam_pytorch.finetune --config configs/cifar100_efficientnet_b0.yaml --optimizer sgd sam --seed 1
 
 # Nhiều giá trị trong một lệnh (tuần tự): 3 seed x 3 augmentation x 2 optimizer = 18 run
 python -m sam_pytorch.train --config configs/cifar10_wrn16x8.yaml \
