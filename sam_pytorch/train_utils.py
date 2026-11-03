@@ -306,6 +306,7 @@ def train_step(
     preserve_first_pass_buffers: bool = True,
     no_weight_decay_on_bn: bool = False,
     loss_scaler: Optional[_LossScaler] = None,
+    reference_global_clipping: bool = False,
 ) -> dict[str, float]:
     """Run one optimizer update over ``batches`` (a list of microbatches).
 
@@ -380,11 +381,31 @@ def train_step(
         optimizer.zero_grad(set_to_none=True)
         grad_norm = torch.zeros((), device=next(model.parameters()).device)
     else:
-        clip_limit = gradient_clip_norm if gradient_clip_norm and gradient_clip_norm > 0 else float("inf")
-        # clip_grad_norm_ returns the pre-clip norm; the logged (post-clip) norm
-        # follows from the scale it applied, so no second pass over the gradients.
-        total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_limit)
-        grad_norm = total_norm * (clip_limit / (total_norm + 1e-6)).clamp(max=1.0)
+        if reference_global_clipping:
+            grads = [p.grad for p in model.parameters() if p.grad is not None]
+            if grads:
+                total_norm = torch.linalg.vector_norm(torch.stack([
+                    torch.linalg.vector_norm(grad.detach()) for grad in grads
+                ]))
+            else:
+                total_norm = torch.zeros((), device=next(model.parameters()).device)
+            clip_limit = gradient_clip_norm or 0.0
+            if clip_limit > 0:
+                # Match SAM's exact rule: scale by limit / norm, without epsilon.
+                if total_norm >= clip_limit:
+                    scale = clip_limit / total_norm
+                    torch._foreach_mul_(grads, scale)
+                    grad_norm = torch.as_tensor(clip_limit, device=total_norm.device,
+                                                dtype=total_norm.dtype)
+                else:
+                    grad_norm = total_norm
+            else:
+                grad_norm = total_norm
+        else:
+            clip_limit = (gradient_clip_norm if gradient_clip_norm and
+                          gradient_clip_norm > 0 else float("inf"))
+            total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_limit)
+            grad_norm = total_norm * (clip_limit / (total_norm + 1e-6)).clamp(max=1.0)
         if is_sam:
             optimizer.second_step(l2_already_added=True)
         else:
@@ -636,7 +657,8 @@ def _write_epoch_metrics(run_dir: Path, history: list[dict]) -> None:
 
 
 def train(model: nn.Module, data, config: dict, optimizer_name: str,
-          run_dir: str | Path, log_every: int = 1) -> dict:
+          run_dir: str | Path, log_every: int = 1,
+          reference_global_clipping: bool = False) -> dict:
     """Train with automatic epoch checkpoint recovery and write run reports.
 
     Progress is logged every ``log_every`` epochs (and on the final epoch).
@@ -775,7 +797,8 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
             l2_reg=float(training.get("weight_decay", 0.001)),
             gradient_clip_norm=training.get("gradient_clip_norm", 5.0),
             no_weight_decay_on_bn=bool(training.get("no_weight_decay_on_bn", False)),
-            loss_scaler=loss_scaler)
+            loss_scaler=loss_scaler,
+            reference_global_clipping=reference_global_clipping)
         # As in JAX, evaluate only every `evaluate_every` epochs.
         last_epoch = epoch == epochs or (max_steps is not None and step >= int(max_steps))
         evaluate = epoch % evaluate_every == 0 or last_epoch

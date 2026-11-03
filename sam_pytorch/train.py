@@ -45,7 +45,8 @@ def run(config, optimizer, augmentation, seed, args) -> None:
     run_dir = (Path(config.get("output_root", "outputs")) / config["dataset"]
                / config["model"] / config["augmentation"] / optimizer
                / f"seed_{config['seed']}")
-    train(model, data, config, optimizer, run_dir)
+    train(model, data, config, optimizer, run_dir,
+          reference_global_clipping=True)
 
 
 def main() -> None:

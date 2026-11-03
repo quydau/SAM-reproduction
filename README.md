@@ -9,7 +9,7 @@ SAM thực hiện cập nhật SGD trên loss tại các trọng số đã bị 
 Các nhóm thực nghiệm theo kế hoạch:
 
 - CIFAR-10 và CIFAR-100, WRN-16-8 huấn luyện từ đầu với `basic`, `cutout`, `autoaugment`.
-- Fine-tune EfficientNet-B0 trên Flowers102 và Oxford-IIIT Pet.
+- Fine-tune EfficientNet-B0 trên Flowers102, Oxford-IIIT Pet, FGVC Aircraft và Stanford Cars.
 - Ba seed ghép cặp giữa SGD và SAM cho mỗi điều kiện; chọn checkpoint trên validation rồi đánh giá test một lần.
 
 Paper báo cáo năm lần chạy độc lập cho fine-tuning. Ba seed hiện dùng là giới hạn phạm vi đồ án; vì vậy độ bất định thống kê sẽ khác paper. Ngoài ra, paper fine-tune EfficientNet-B7 và EfficientNet-L2 với checkpoint công khai, trong khi cấu hình T4 ở đây dùng EfficientNet-B0 với weights ImageNet từ torchvision. Đây là tái lập có điều chỉnh về mô hình/phần cứng, không phải kết quả số học tương đương với thí nghiệm gốc.
@@ -21,6 +21,7 @@ Paper báo cáo năm lần chạy độc lập cho fine-tuning. Ba seed hiện d
 | CIFAR-10 / WRN-16-8 (paper dùng WRN-28-10; ở đây thay bằng WRN-16-8 nhỏ hơn) | Batch hiệu dụng 256, 200 epoch, LR 0.1, WD 0.0005, `rho=0.05`, cosine, SGD momentum 0.9, Nesterov | Paper Appendix C.1, Table 6 nêu batch/LR/WD/rho; repo chính thức dùng cosine, momentum 0.9, Nesterov và clipping mặc định 5 |
 | CIFAR augmentation | Basic: reflect-pad 4, random crop + flip; AutoAugment CIFAR rồi basic; Cutout: mask 16×16 chung batch sau normalization | Paper Appendix C; thứ tự/policy/chi tiết mask theo repo chính thức |
 | Fine-tune Flowers/Pet theo C.2 | WD 1e-5; LR 0.016 với batch 1024, LR 0.008 với batch 512; cosine; momentum 0.9; đóng băng thống kê BatchNorm; không augmentation. | Paper Appendix C.2. Repo SAM không dispatch Flowers/Pet; preprocessing ở đây dùng center crop, resize và ImageNet normalization, không có phép biến đổi ngẫu nhiên. |
+| Fine-tune FGVC Aircraft/Stanford Cars | Dùng cùng recipe EfficientNet-B0, batch hiệu dụng 1024, 5.000 bước, LR 0.016; validation stratified 10% từ train chính thức | Cấu hình theo recipe C.2 của repo; tập Cars lấy từ mirror Hugging Face vì URL gốc không còn hoạt động. |
 | Fine-tune đề xuất cho T4 | Batch hiệu dụng 256 (microbatch 16 × tích lũy 16), LR 0.004, 20,000 bước, WD 1e-5, `rho=0.05`, EfficientNet-B0 | Batch/LR/steps là suy luận để khớp xấp xỉ số mẫu đã thấy: LR scale tuyến tính từ C.2; 20k × 256 tương đương 5k × 1024. B0 là thay đổi để phù hợp bộ nhớ, không phải model trong paper |
 
 Các giá trị cho CIFAR được nêu trực tiếp trong paper. `rho=0.05` là lựa chọn có căn cứ: paper dùng giá trị này cho CIFAR-10 và cũng báo cáo kết quả fine-tuning với `rho=0.05`; kết quả fine-tuning tốt nhất có thể dùng rho đã tinh chỉnh riêng. Với Flowers/Pet, LR 0.004 và batch hiệu dụng 256 là ngoại suy theo tỷ lệ từ 0.016 @ 1024 và 0.008 @ 512. Paper không xác nhận trực tiếp giá trị 0.004. Weights ImageNet1K_V1 và kích thước đầu vào 224 là thay đổi để dùng EfficientNet-B0; cách crop/resize theo code SAM, không dùng transform dành riêng cho inference của torchvision.
@@ -44,11 +45,13 @@ python -m sam_pytorch.train --config configs/cifar100_wrn16x8.yaml --augmentatio
 python -m sam_pytorch.finetune --config configs/flowers102_efficientnet_b0.yaml --optimizer sgd --seed 1
 python -m sam_pytorch.finetune --config configs/oxford_iiit_pet_efficientnet_b0.yaml --optimizer sam --seed 2
 python -m sam_pytorch.finetune --config configs/fgvc_aircraft_efficientnet_b0.yaml --optimizer sgd sam --seed 1
+python -m sam_pytorch.finetune --config configs/stanford_cars_efficientnet_b0.yaml --optimizer sam --seed 1
 
 # Nhiều giá trị trong một lệnh (tuần tự): 3 seed x 3 augmentation x 2 optimizer = 18 run
 python -m sam_pytorch.train --config configs/cifar10_wrn16x8.yaml \
   --augmentation basic cutout autoaugment --optimizer sgd sam --seed 1 2 3
 python -m sam_pytorch.finetune --config configs/flowers102_efficientnet_b0.yaml --optimizer sgd sam --seed 1 2 3
+python -m sam_pytorch.finetune --config configs/stanford_cars_efficientnet_b0.yaml --optimizer sgd sam --seed 1 2 3
 ```
 
 Để chạy thử ngắn, truyền **một** trong `--epochs N` hoặc `--steps N`. Tham số được chọn ghi đè giới hạn tương ứng trong YAML; hai cờ không dùng đồng thời. Nếu không truyền cờ giới hạn, chương trình dùng nguyên `training.epochs` hoặc `training.max_steps` trong YAML. `--steps` là số lần cập nhật optimizer. Ví dụ `--steps 5` cho fine-tuning hoặc `--epochs 2` cho CIFAR. Tiến độ epoch được in ra terminal và append ngay vào `train.log`; `metrics.csv`, `metrics.txt` (báo cáo tiến độ trong lúc chạy) và checkpoint cũng được cập nhật sau mỗi epoch. Khi hoàn tất, `metrics.txt`/`results.txt` chứa báo cáo đầy đủ; test được đánh giá một lần. Báo cáo gồm `test_error`, classification report theo lớp và confusion matrix. Trên Mac, cài PyTorch/torchvision bản macOS; MPS được tự chọn khi có GPU Apple Silicon.
@@ -78,3 +81,4 @@ python -m pip install -r requirements.txt
 - Foret et al., [Sharpness-Aware Minimization for Efficiently Improving Generalization](https://arxiv.org/abs/2010.01412), ICLR 2021.
 - [Mã nguồn chính thức Google Research](https://github.com/google-research/sam) (JAX/Flax, TensorFlow Datasets).
 - [Weights EfficientNet-B0 của torchvision](https://docs.pytorch.org/vision/stable/models/efficientnet.html) dùng trong cấu hình fine-tune đã điều chỉnh.
+- [Mirror Stanford Cars trên Hugging Face](https://huggingface.co/datasets/mteb/StanfordCars), giữ hai split train/test chính thức; torchvision ghi nhận URL tải gốc của bộ dữ liệu hiện không còn hoạt động.

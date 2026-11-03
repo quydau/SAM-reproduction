@@ -627,3 +627,37 @@ class FGVCAircraftDataModule(_ImageNetDataModule):
         super().__init__(data_root, batch_size, validation_fraction,
                          split_seed, num_workers, pin_memory)
         self.class_names = self._train_dataset.class_names
+
+
+class StanfordCarsDataModule(_ImageNetDataModule):
+    """Stanford Cars loaders with a fixed stratified train/validation split.
+
+    The Hugging Face mirror ``mteb/StanfordCars`` preserves the official
+    8,144-image training and 8,041-image test partitions. The official train
+    partition is divided by class into train/validation; test stays separate.
+    Labels are zero-based class ids and class names come from parquet metadata.
+    """
+
+    NUM_CLASSES = 196
+    REPO = "mteb/StanfordCars"
+
+    def __init__(self, data_root: str | Path, batch_size: int,
+                 validation_fraction: float = 0.1, split_seed: int = 1,
+                 num_workers: int = 4, pin_memory: Optional[bool] = None):
+        self.data_root = Path(data_root)
+        transform = _imagenet_transform()
+        cache = self.data_root / "stanford-cars-hf"
+        self._train_dataset = _HFImageDataset(
+            self.REPO,
+            ["data/train-00000-of-00002.parquet",
+             "data/train-00001-of-00002.parquet"],
+            cache / "train", transform)
+        self._test_dataset = _HFImageDataset(
+            self.REPO,
+            ["data/test-00000-of-00002.parquet",
+             "data/test-00001-of-00002.parquet"],
+            cache / "test", transform)
+        self._split_labels = list(self._train_dataset._labels)
+        super().__init__(data_root, batch_size, validation_fraction,
+                         split_seed, num_workers, pin_memory)
+        self.class_names = self._train_dataset.class_names

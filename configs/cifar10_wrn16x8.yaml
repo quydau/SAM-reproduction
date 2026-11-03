@@ -19,7 +19,7 @@ training:
   gradient_accumulation_steps: 1
   effective_batch_size: 256
   num_workers: 2 # Only used by the AutoAugment (PIL) pipeline; other conditions augment on the GPU.
-  mixed_precision: fp16 # CUDA fp16 autocast + dynamic loss scaling. Set false for fp32.
+  mixed_precision: fp32 # Match the SAM reference training path; no loss scaling.
   channels_last: true # Faster convolutions on tensor cores.
   cudnn_benchmark: true # Autotune conv kernels (fixed input shapes).
   learning_rate: 0.1
