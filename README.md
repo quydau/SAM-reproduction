@@ -9,7 +9,7 @@ SAM thực hiện cập nhật SGD trên loss tại các trọng số đã bị 
 Các nhóm thực nghiệm theo kế hoạch:
 
 - CIFAR-10 và CIFAR-100, WRN-16-8 huấn luyện từ đầu với `basic`, `cutout`, `autoaugment`.
-- Fine-tune EfficientNet-B0 trên Flowers102, Oxford-IIIT Pet, FGVC Aircraft và Stanford Cars.
+- Fine-tune EfficientNet-B0 trên Flowers102, Oxford-IIIT Pet, FGVC Aircraft, Stanford Cars và Birdsnap.
 - Fine-tune EfficientNet-B3 với weights `tf_efficientnet_b3.ns_jft_in1k` trên Flowers102, Stanford Cars và Oxford-IIIT Pet.
 - Fine-tune thêm EfficientNet-B0 trên CIFAR-100 với cùng recipe EfficientNet.
 - Ba seed ghép cặp giữa SGD và SAM cho mỗi điều kiện; chọn checkpoint trên validation rồi đánh giá test một lần.
@@ -24,6 +24,7 @@ Paper báo cáo năm lần chạy độc lập cho fine-tuning. Ba seed hiện d
 | CIFAR augmentation | Basic: reflect-pad 4, random crop + flip; AutoAugment CIFAR rồi basic; Cutout: mask 16×16 chung batch sau normalization | Paper Appendix C; thứ tự/policy/chi tiết mask theo repo chính thức |
 | Fine-tune Flowers/Pet theo C.2 | WD 1e-5; LR 0.016 với batch 1024, LR 0.008 với batch 512; cosine; momentum 0.9; đóng băng thống kê BatchNorm; không augmentation. | Paper Appendix C.2. Repo SAM không dispatch Flowers/Pet; preprocessing ở đây dùng center crop, resize và ImageNet normalization, không có phép biến đổi ngẫu nhiên. |
 | Fine-tune FGVC Aircraft/Stanford Cars | Dùng cùng recipe EfficientNet-B0, batch hiệu dụng 1024, 5.000 bước, LR 0.016; validation stratified 10% từ train chính thức | Cấu hình theo recipe C.2 của repo; tập Cars lấy từ mirror Hugging Face vì URL gốc không còn hoạt động. |
+| Fine-tune Birdsnap | Dùng recipe EfficientNet-B0, batch hiệu dụng 1024, 5.000 bước, LR 0.016; AutoAugment ImageNet trên train, validation stratified 10%, test chính thức | Cùng hyperparameter với các fine-tune B0; policy ImageNet phù hợp ảnh Birdsnap độ phân giải cao. |
 | EfficientNet-B3 JFT trên Flowers102/Pet/Cars | `tf_efficientnet_b3.ns_jft_in1k`, ảnh 300×300, batch hiệu dụng 1024 (8 × 128), 5.000 bước; giữ nguyên LR, optimizer và SAM như recipe B0 | Weights Noisy Student được train trên ImageNet-1k và JFT-300M; kích thước ảnh và normalization lấy từ pretrained config của timm. |
 | Fine-tune đề xuất cho T4 | Batch hiệu dụng 256 (microbatch 16 × tích lũy 16), LR 0.004, 20,000 bước, WD 1e-5, `rho=0.05`, EfficientNet-B0 | Batch/LR/steps là suy luận để khớp xấp xỉ số mẫu đã thấy: LR scale tuyến tính từ C.2; 20k × 256 tương đương 5k × 1024. B0 là thay đổi để phù hợp bộ nhớ, không phải model trong paper |
 
@@ -51,6 +52,7 @@ python -m sam_pytorch.finetune --config configs/flowers102_efficientnet_b0.yaml 
 python -m sam_pytorch.finetune --config configs/oxford_iiit_pet_efficientnet_b0.yaml --optimizer sam --seed 2
 python -m sam_pytorch.finetune --config configs/fgvc_aircraft_efficientnet_b0.yaml --optimizer sgd sam --seed 1
 python -m sam_pytorch.finetune --config configs/stanford_cars_efficientnet_b0.yaml --optimizer sam --seed 1
+python -m sam_pytorch.finetune --config configs/birdsnap_efficientnet_b0.yaml --optimizer sgd sam --seed 1
 python -m sam_pytorch.finetune --config configs/cifar100_efficientnet_b0.yaml --optimizer sgd sam --seed 1
 python -m sam_pytorch.finetune --config configs/flowers102_efficientnet_b3_jft.yaml --optimizer sgd sam --seed 1
 python -m sam_pytorch.finetune --config configs/stanford_cars_efficientnet_b3_jft.yaml --optimizer sgd sam --seed 1
@@ -91,3 +93,4 @@ python -m pip install -r requirements.txt
 - [Mã nguồn chính thức Google Research](https://github.com/google-research/sam) (JAX/Flax, TensorFlow Datasets).
 - [Weights EfficientNet-B0 của torchvision](https://docs.pytorch.org/vision/stable/models/efficientnet.html) dùng trong cấu hình fine-tune đã điều chỉnh.
 - [Mirror Stanford Cars trên Hugging Face](https://huggingface.co/datasets/mteb/StanfordCars), giữ hai split train/test chính thức; torchvision ghi nhận URL tải gốc của bộ dữ liệu hiện không còn hoạt động.
+- Birdsnap cần được tải và giải nén thủ công vào `data/birdsnap/`, với `images.txt`, `species.txt`, `test_images.txt` trong thư mục đó hoặc `annotations/`, và ảnh trong `images/<class>/<file>` (hoặc trực tiếp theo các đường dẫn trong `images.txt`).

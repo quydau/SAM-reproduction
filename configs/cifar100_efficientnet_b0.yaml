@@ -3,6 +3,7 @@ dataset: cifar100
 data_root: data
 model: efficientnet_b0
 num_classes: 100
+augmentation: autoaugment # Reuse the CIFAR AutoAugment policy from the previous experiments.
 optimizers: [sgd, sam]
 seed: 1
 

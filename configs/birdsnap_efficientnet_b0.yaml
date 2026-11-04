@@ -1,0 +1,48 @@
+experiment: birdsnap_efficientnet_b0
+dataset: birdsnap
+data_root: data
+model: efficientnet_b0
+num_classes: 500
+augmentation: autoaugment # torchvision ImageNet policy, applied to each training image.
+optimizers: [sgd, sam]
+seed: 1
+
+split:
+  validation_fraction: 0.1
+  seed: 1
+
+training:
+  batch_size: 64
+  gradient_accumulation_steps: 16
+  effective_batch_size: 1024
+  num_workers: 4
+  epochs: null
+  max_steps: 5000
+  mixed_precision: fp16
+  channels_last: true
+  cudnn_benchmark: true
+  learning_rate: 0.016
+  scheduler: cosine
+  weight_decay: 0.00001
+  momentum: 0.9
+  nesterov: true
+  label_smoothing: 0.1
+  gradient_clip_norm: 1.0
+  freeze_batch_norm_statistics: true
+  evaluate_every: 10
+  checkpoint_every: 50
+
+sam:
+  rho: 0.05
+
+pretrained_weights: IMAGENET1K_V1
+replace_classifier: true
+image:
+  crop_size: 224
+  eval_center_crop_fraction: 0.875
+  interpolation: bicubic
+  normalization: imagenet
+  train_preprocessing: imagenet_autoaugment_then_sam_center_crop
+  eval_preprocessing: sam_center_crop_then_resize
+
+output_root: outputs

@@ -7,7 +7,8 @@ import logging
 import time
 from pathlib import Path
 
-from sam_pytorch.datasets import (FGVCAircraftDataModule,
+from sam_pytorch.datasets import (BirdsnapDataModule,
+                                  FGVCAircraftDataModule,
                                   Flowers102DataModule,
                                   OxfordIIITPetDataModule,
                                   CIFAR100DataModule,
@@ -48,11 +49,11 @@ def run(config, optimizer, seed, args) -> None:
                       image_mean=model_data["mean"],
                       image_std=model_data["std"])
     if config["dataset"] == "cifar100":
-        # Keep the existing CIFAR-100 split/loader; this run only adds a model.
+        # Reuse the CIFAR-100 loader and its configured augmentation policy.
         data = CIFAR100DataModule(
             data_root=config["data_root"],
             batch_size=int(training["batch_size"]),
-            augmentation="none",
+            augmentation=config.get("augmentation", "none"),
             validation_seed=int(split.get("seed", config["seed"])),
             num_workers=int(training.get("num_workers", 0)))
     elif config["dataset"] == "flowers102":
@@ -63,6 +64,9 @@ def run(config, optimizer, seed, args) -> None:
         data = FGVCAircraftDataModule(**common)
     elif config["dataset"] == "stanford_cars":
         data = StanfordCarsDataModule(**common)
+    elif config["dataset"] == "birdsnap":
+        data = BirdsnapDataModule(
+            **common, augmentation=config.get("augmentation", "autoaugment"))
     else:
         raise ValueError(f"Unsupported fine-tuning dataset: {config['dataset']}")
 

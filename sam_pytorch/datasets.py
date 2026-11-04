@@ -1,5 +1,6 @@
 """Dataset splits and PyTorch data loaders for the experiments."""
 
+import csv
 import json
 from pathlib import Path
 from typing import Optional
@@ -681,3 +682,138 @@ class StanfordCarsDataModule(_ImageNetDataModule):
                          split_seed, num_workers, pin_memory,
                          image_mean, image_std)
         self.class_names = self._train_dataset.class_names
+
+
+class _BirdsnapDataset(Dataset):
+    """Birdsnap images with an optional per-epoch PIL transform."""
+
+    def __init__(self, samples: list[tuple[Path, int]], transform):
+        self.samples, self.transform = samples, transform
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, index: int):
+        path, label = self.samples[index]
+        with Image.open(path) as image:
+            image = image.convert("RGB")
+        return self.transform(image), label
+
+
+class BirdsnapDataModule:
+    """Birdsnap official train/test split with a stratified validation split.
+
+    Expects the extracted dataset under ``data_root/birdsnap``. Annotation
+    files may be in that directory or its ``annotations`` subdirectory; images
+    may be under ``images/`` or directly under the dataset directory.
+    AutoAugment is applied to PIL images on every training epoch.
+    """
+
+    NUM_CLASSES = 500
+
+    def __init__(self, data_root: str | Path, batch_size: int,
+                 validation_fraction: float = 0.1, split_seed: int = 1,
+                 num_workers: int = 4, pin_memory: Optional[bool] = None,
+                 augmentation: str = "autoaugment",
+                 image_size: int = 224,
+                 image_mean=(0.485, 0.456, 0.406),
+                 image_std=(0.229, 0.224, 0.225)):
+        if batch_size < 1 or num_workers < 0:
+            raise ValueError("batch_size must be positive and num_workers >= 0")
+        if augmentation != "autoaugment":
+            raise ValueError("Birdsnap fine-tuning requires augmentation='autoaugment'")
+        self.data_root = Path(data_root) / "birdsnap"
+        self.batch_size, self.num_workers = batch_size, num_workers
+        self.pin_memory = (torch.cuda.is_available()
+                           if pin_memory is None else pin_memory)
+        self.num_classes = self.NUM_CLASSES
+        self.image_size = image_size
+
+        annotation_roots = (self.data_root / "annotations", self.data_root)
+        def annotation_file(name: str) -> Path:
+            for root in annotation_roots:
+                path = root / name
+                if path.is_file():
+                    return path
+            raise FileNotFoundError(
+                f"Birdsnap {name} not found under {self.data_root}")
+
+        species = {}
+        with annotation_file("species.txt").open(encoding="utf-8") as stream:
+            for row in csv.DictReader(stream, delimiter="\t"):
+                species[int(row["id"])] = row["common"]
+        if set(species) != set(range(1, self.NUM_CLASSES + 1)):
+            raise ValueError("Birdsnap species.txt must list species IDs 1 through 500")
+        self.class_names = [species[i] for i in range(1, self.NUM_CLASSES + 1)]
+
+        test_paths = set()
+        with annotation_file("test_images.txt").open(encoding="utf-8") as stream:
+            for row in csv.DictReader(stream, delimiter="\t"):
+                path = row.get("path") or next(iter(row.values()), "")
+                if path:
+                    test_paths.add(path)
+
+        def image_path(relative: str) -> Optional[Path]:
+            candidates = (self.data_root / "images" / relative,
+                          self.data_root / relative)
+            return next((path for path in candidates if path.is_file()), None)
+
+        train_samples, test_samples = [], []
+        with annotation_file("images.txt").open(encoding="utf-8") as stream:
+            for row in csv.DictReader(stream, delimiter="\t"):
+                relative = row["path"]
+                path = image_path(relative)
+                if path is None:
+                    continue  # Original Birdsnap can contain unavailable Flickr images.
+                sample = (path, int(row["species_id"]) - 1)
+                (test_samples if relative in test_paths else train_samples).append(sample)
+        if not train_samples or not test_samples:
+            raise ValueError(
+                "No Birdsnap images found; extract the official images and annotations "
+                f"under {self.data_root}")
+
+        labels = [label for _, label in train_samples]
+        train_indices, validation_indices = _ImageNetDataModule._stratified_split(
+            labels, validation_fraction, split_seed)
+        self.num_training_obs = len(train_indices)
+        self._train_augmented = _BirdsnapDataset(
+            train_samples,
+            transforms.Compose((
+                transforms.AutoAugment(
+                    policy=transforms.AutoAugmentPolicy.IMAGENET),
+                _SAMCenterCrop(image_size), transforms.ToTensor(),
+                transforms.Normalize(image_mean, image_std))))
+        self._train_plain = _BirdsnapDataset(
+            train_samples,
+            transforms.Compose((_SAMCenterCrop(image_size), transforms.ToTensor(),
+                                transforms.Normalize(image_mean, image_std))))
+        self._test = _BirdsnapDataset(
+            test_samples,
+            transforms.Compose((_SAMCenterCrop(image_size), transforms.ToTensor(),
+                                transforms.Normalize(image_mean, image_std))))
+        self._train_indices, self._validation_indices = train_indices, validation_indices
+
+    def _loader(self, dataset: Dataset, *, shuffle: bool, seed: int,
+                drop_last: bool = False) -> DataLoader:
+        return DataLoader(
+            dataset, batch_size=self.batch_size, shuffle=shuffle,
+            drop_last=drop_last, num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            generator=torch.Generator().manual_seed(seed),
+            persistent_workers=False)
+
+    def get_train_loader(self, seed: int = 1,
+                         drop_last: bool = True) -> DataLoader:
+        dataset = Subset(self._train_augmented, self._train_indices)
+        return self._loader(dataset, shuffle=True, seed=seed, drop_last=drop_last)
+
+    def get_plain_train_loader(self, seed: int = 1) -> DataLoader:
+        dataset = Subset(self._train_plain, self._train_indices)
+        return self._loader(dataset, shuffle=False, seed=seed)
+
+    def get_validation_loader(self) -> DataLoader:
+        dataset = Subset(self._train_plain, self._validation_indices)
+        return self._loader(dataset, shuffle=False, seed=0)
+
+    def get_test_loader(self) -> DataLoader:
+        return self._loader(self._test, shuffle=False, seed=0)
