@@ -1,4 +1,4 @@
-"""Fine-tune EfficientNet-B0 on Flowers102, Oxford-IIIT Pet, FGVC Aircraft or Stanford Cars."""
+"""Fine-tune EfficientNet models on supported image classification datasets."""
 
 import argparse
 import copy
@@ -32,6 +32,21 @@ def run(config, optimizer, seed, args) -> None:
         validation_fraction=float(split.get("validation_fraction", 0.1)),
         split_seed=int(split.get("seed", config["seed"])),
         num_workers=int(training.get("num_workers", 0)))
+    seed_everything(int(config["seed"]))
+    model = create_model(config["model"], int(config["num_classes"]),
+                         config.get("pretrained_weights"))
+    if config["model"] == "efficientnet_b4_jft":
+        from timm.data import resolve_model_data_config
+
+        model_data = resolve_model_data_config(model)
+        image_size = int(config.get("image", {}).get("crop_size", 380))
+        expected_size = int(model_data["input_size"][-1])
+        if image_size != expected_size:
+            raise ValueError(
+                f"{config['model']} expects image size {expected_size}, got {image_size}")
+        common.update(image_size=image_size,
+                      image_mean=model_data["mean"],
+                      image_std=model_data["std"])
     if config["dataset"] == "cifar100":
         # Keep the existing CIFAR-100 split/loader; this run only adds a model.
         data = CIFAR100DataModule(
@@ -51,9 +66,6 @@ def run(config, optimizer, seed, args) -> None:
     else:
         raise ValueError(f"Unsupported fine-tuning dataset: {config['dataset']}")
 
-    seed_everything(int(config["seed"]))
-    model = create_model(config["model"], int(config["num_classes"]),
-                         config.get("pretrained_weights"))
     run_dir = (Path(config.get("output_root", "outputs"))
                / config["dataset"] / config["model"] / optimizer
                / f"seed_{config['seed']}")
@@ -63,7 +75,7 @@ def run(config, optimizer, seed, args) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True,
-                        help="Fine-tuning YAML config (Flowers102, Oxford-IIIT Pet, FGVC Aircraft or Stanford Cars)")
+                        help="Fine-tuning YAML config")
     parser.add_argument("--optimizer", nargs="+", choices=("sgd", "sam"), required=True,
                         help="One or more optimizers; each runs in turn")
     parser.add_argument("--seed", nargs="+", type=int,
@@ -77,8 +89,8 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
     config = load_config(args.config)
-    if config["model"] != "efficientnet_b0":
-        raise ValueError("finetune.py requires an EfficientNet-B0 config")
+    if config["model"] not in ("efficientnet_b0", "efficientnet_b4_jft"):
+        raise ValueError("finetune.py requires an EfficientNet-B0 or B4-JFT config")
 
     seeds = args.seed or [int(config["seed"])]
     combos = list(itertools.product(

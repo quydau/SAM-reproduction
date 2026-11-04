@@ -26,4 +26,11 @@ def create_model(model_name, num_classes, pretrained_weights="IMAGENET1K_V1"):
         return WideResNet(depth=16, num_classes=num_classes, widen_factor=8)
     if model_name == "efficientnet_b0":
         return EfficientNetB0(num_classes, pretrained_weights)
+    if model_name == "efficientnet_b4_jft":
+        import timm
+
+        model_name = pretrained_weights or "tf_efficientnet_b4"
+        return timm.create_model(
+            model_name, pretrained=pretrained_weights is not None,
+            num_classes=num_classes)
     raise ValueError(f"Unsupported model: {model_name}")

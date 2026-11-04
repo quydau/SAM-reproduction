@@ -268,7 +268,9 @@ class _ImageNetDataModule:
     # chuẩn bị dataset cùng danh sách nhãn trước khi gọi phần khởi tạo này.
     def __init__(self, data_root: str | Path, batch_size: int,
                  validation_fraction: float = 0.1, split_seed: int = 1,
-                 num_workers: int = 4, pin_memory: Optional[bool] = None):
+                 num_workers: int = 4, pin_memory: Optional[bool] = None,
+                 image_mean=(0.485, 0.456, 0.406),
+                 image_std=(0.229, 0.224, 0.225)):
         if batch_size < 1 or num_workers < 0:
             raise ValueError("batch_size must be positive and num_workers >= 0")
         if not 0.0 < validation_fraction < 1.0:
@@ -283,6 +285,7 @@ class _ImageNetDataModule:
         # num_workers/pin_memory are kept for config compatibility only: the
         # cached uint8 tensors need no worker processes.
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.image_mean, self.image_std = image_mean, image_std
         self._tensor_cache: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
         self.train_indices, self.validation_indices = self._stratified_split(
             self._split_labels, validation_fraction, split_seed)
@@ -335,7 +338,7 @@ class _ImageNetDataModule:
         return _TensorBatches(
             images, labels, torch.as_tensor(indices, device=images.device),
             self.batch_size, shuffle=shuffle, seed=seed, drop_last=drop_last,
-            device=self.device)
+            device=self.device, mean=self.image_mean, std=self.image_std)
 
     def get_train_loader(self, seed: int = 1,
                          drop_last: bool = True) -> "_TensorBatches":
@@ -375,15 +378,14 @@ class _TensorBatches:
     normalization is done on ``device``, as ``ToTensor`` + ``Normalize`` did.
     """
 
-    MEAN = (0.485, 0.456, 0.406)
-    STD = (0.229, 0.224, 0.225)
-
     def __init__(self, images: torch.Tensor, labels: torch.Tensor,
                  indices: torch.Tensor, batch_size: int, *, shuffle: bool,
-                 seed: int, drop_last: bool, device: torch.device):
+                 seed: int, drop_last: bool, device: torch.device,
+                 mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)):
         self.images, self.labels, self.indices = images, labels, indices
         self.batch_size, self.shuffle, self.seed = batch_size, shuffle, seed
         self.drop_last, self.device = drop_last, device
+        self.mean, self.std = mean, std
 
     @property
     def dataset(self) -> torch.Tensor:
@@ -406,8 +408,8 @@ class _TensorBatches:
             order = order.to(self.indices.device)
         else:
             order = torch.arange(count, device=self.indices.device)
-        mean = torch.tensor(self.MEAN, device=self.device).view(1, 3, 1, 1)
-        std = torch.tensor(self.STD, device=self.device).view(1, 3, 1, 1)
+        mean = torch.tensor(self.mean, device=self.device).view(1, 3, 1, 1)
+        std = torch.tensor(self.std, device=self.device).view(1, 3, 1, 1)
         for batch in range(len(self)):
             picked = self.indices[order[batch * self.batch_size:
                                         (batch + 1) * self.batch_size]]
@@ -417,14 +419,14 @@ class _TensorBatches:
             yield images, labels
 
 
-def _imagenet_transform() -> transforms.Compose:
+def _imagenet_transform(image_size: int = 224) -> transforms.Compose:
     """Tạo pipeline biến đổi ảnh dùng cho các dataset fine-tuning.
 
-    Ảnh được crop/resize về 224×224 và giữ dạng tensor uint8; việc chia 255 và
+    Ảnh được crop/resize về image_size×image_size và giữ dạng tensor uint8; việc chia 255 và
     chuẩn hóa theo mean/độ lệch chuẩn ImageNet do ``_TensorBatches`` làm trên GPU.
     """
     return transforms.Compose((
-        _SAMCenterCrop(224),
+        _SAMCenterCrop(image_size),
         transforms.PILToTensor(),
     ))
 
@@ -458,9 +460,10 @@ class _HFImageDataset(Dataset):
     """
 
     def __init__(self, repo_id: str, parquet_files: list[str],
-                 cache_dir: Path, transform=None):
+                 cache_dir: Path, transform=None, image_size: int = 224):
         self.cache_dir = Path(cache_dir)
         self.transform = transform
+        self.image_size = image_size
         labels_file = self.cache_dir / "labels.json"
         if not labels_file.exists():
             self._extract(repo_id, parquet_files)
@@ -503,7 +506,7 @@ class _HFImageDataset(Dataset):
         Only valid when ``transform`` returns a uint8 tensor. The decode +
         crop + resize pass runs once and is reused by later runs.
         """
-        path = self.cache_dir / "tensors_224.pt"
+        path = self.cache_dir / f"tensors_{self.image_size}.pt"
         if path.exists():
             return torch.load(path)
         images = torch.stack([self[i][0] for i in range(len(self))])
@@ -546,12 +549,15 @@ class Flowers102DataModule(_ImageNetDataModule):
 
     def __init__(self, data_root: str | Path, batch_size: int,
                  validation_fraction: float = 0.1, split_seed: int = 1,
-                 num_workers: int = 4, pin_memory: Optional[bool] = None):
+                 num_workers: int = 4, pin_memory: Optional[bool] = None,
+                 image_size: int = 224,
+                 image_mean=(0.485, 0.456, 0.406),
+                 image_std=(0.229, 0.224, 0.225)):
         self.data_root = Path(data_root)
-        transform = _imagenet_transform()
+        transform = _imagenet_transform(image_size)
         cache = self.data_root / "flowers-102-hf"
         train, val, test = (
-            _HFImageDataset(self.REPO, files, cache / name, transform)
+            _HFImageDataset(self.REPO, files, cache / name, transform, image_size)
             for name, files in (
                 ("train", ["data/train-00000-of-00001.parquet"]),
                 ("val", ["data/validation-00000-of-00001.parquet"]),
@@ -561,7 +567,8 @@ class Flowers102DataModule(_ImageNetDataModule):
         self._test_dataset = test
         self._split_labels = train._labels + val._labels
         super().__init__(data_root, batch_size, validation_fraction,
-                         split_seed, num_workers, pin_memory)
+                         split_seed, num_workers, pin_memory,
+                         image_mean, image_std)
         self.class_names = train.class_names
 
 
@@ -578,19 +585,23 @@ class OxfordIIITPetDataModule(_ImageNetDataModule):
 
     def __init__(self, data_root: str | Path, batch_size: int,
                  validation_fraction: float = 0.1, split_seed: int = 1,
-                 num_workers: int = 4, pin_memory: Optional[bool] = None):
+                 num_workers: int = 4, pin_memory: Optional[bool] = None,
+                 image_size: int = 224,
+                 image_mean=(0.485, 0.456, 0.406),
+                 image_std=(0.229, 0.224, 0.225)):
         self.data_root = Path(data_root)
-        transform = _imagenet_transform()
+        transform = _imagenet_transform(image_size)
         cache = self.data_root / "oxford-iiit-pet-hf"
         self._train_dataset = _HFImageDataset(
             self.REPO, ["data/train-00000-of-00001.parquet"],
-            cache / "trainval", transform)
+            cache / "trainval", transform, image_size)
         self._test_dataset = _HFImageDataset(
             self.REPO, ["data/test-00000-of-00001.parquet"],
-            cache / "test", transform)
+            cache / "test", transform, image_size)
         self._split_labels = list(self._train_dataset._labels)
         super().__init__(data_root, batch_size, validation_fraction,
-                         split_seed, num_workers, pin_memory)
+                         split_seed, num_workers, pin_memory,
+                         image_mean, image_std)
         self.class_names = [" ".join(part.title() for part in name.split("_"))
                             for name in self._train_dataset.class_names]
 
@@ -609,23 +620,27 @@ class FGVCAircraftDataModule(_ImageNetDataModule):
 
     def __init__(self, data_root: str | Path, batch_size: int,
                  validation_fraction: float = 0.1, split_seed: int = 1,
-                 num_workers: int = 4, pin_memory: Optional[bool] = None):
+                 num_workers: int = 4, pin_memory: Optional[bool] = None,
+                 image_size: int = 224,
+                 image_mean=(0.485, 0.456, 0.406),
+                 image_std=(0.229, 0.224, 0.225)):
         self.data_root = Path(data_root)
-        transform = _imagenet_transform()
+        transform = _imagenet_transform(image_size)
         cache = self.data_root / "fgvc-aircraft-hf"
         self._train_dataset = _HFImageDataset(
             f"{self.REPO}_train",
             ["data/train-00000-of-00002-8e8c2fac664e9852.parquet",
              "data/train-00001-of-00002-367db3639819cbee.parquet"],
-            cache / "train", transform)
+            cache / "train", transform, image_size)
         self._test_dataset = _HFImageDataset(
             f"{self.REPO}_test",
             ["data/test-00000-of-00002-f701e149b12ef922.parquet",
              "data/test-00001-of-00002-995f2f92aa55f647.parquet"],
-            cache / "test", transform)
+            cache / "test", transform, image_size)
         self._split_labels = list(self._train_dataset._labels)
         super().__init__(data_root, batch_size, validation_fraction,
-                         split_seed, num_workers, pin_memory)
+                         split_seed, num_workers, pin_memory,
+                         image_mean, image_std)
         self.class_names = self._train_dataset.class_names
 
 
@@ -643,21 +658,25 @@ class StanfordCarsDataModule(_ImageNetDataModule):
 
     def __init__(self, data_root: str | Path, batch_size: int,
                  validation_fraction: float = 0.1, split_seed: int = 1,
-                 num_workers: int = 4, pin_memory: Optional[bool] = None):
+                 num_workers: int = 4, pin_memory: Optional[bool] = None,
+                 image_size: int = 224,
+                 image_mean=(0.485, 0.456, 0.406),
+                 image_std=(0.229, 0.224, 0.225)):
         self.data_root = Path(data_root)
-        transform = _imagenet_transform()
+        transform = _imagenet_transform(image_size)
         cache = self.data_root / "stanford-cars-hf"
         self._train_dataset = _HFImageDataset(
             self.REPO,
             ["data/train-00000-of-00002.parquet",
              "data/train-00001-of-00002.parquet"],
-            cache / "train", transform)
+            cache / "train", transform, image_size)
         self._test_dataset = _HFImageDataset(
             self.REPO,
             ["data/test-00000-of-00002.parquet",
              "data/test-00001-of-00002.parquet"],
-            cache / "test", transform)
+            cache / "test", transform, image_size)
         self._split_labels = list(self._train_dataset._labels)
         super().__init__(data_root, batch_size, validation_fraction,
-                         split_seed, num_workers, pin_memory)
+                         split_seed, num_workers, pin_memory,
+                         image_mean, image_std)
         self.class_names = self._train_dataset.class_names
