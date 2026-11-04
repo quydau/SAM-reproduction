@@ -13,6 +13,7 @@ split:
 
 training:
   batch_size: 64
+  num_workers: 4
   gradient_accumulation_steps: 16
   effective_batch_size: 1024
   epochs: null
@@ -20,7 +21,7 @@ training:
   mixed_precision: fp16
   channels_last: true
   cudnn_benchmark: true
-  learning_rate: 0.05
+  learning_rate: 0.016
   scheduler: cosine
   weight_decay: 0.00001
   momentum: 0.9
