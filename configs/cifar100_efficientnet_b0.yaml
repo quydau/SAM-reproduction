@@ -21,7 +21,7 @@ training:
   mixed_precision: fp16
   channels_last: true
   cudnn_benchmark: true
-  learning_rate: 0.016
+  learning_rate: 0.1
   scheduler: cosine
   weight_decay: 0.00001
   momentum: 0.9
