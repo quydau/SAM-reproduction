@@ -1,9 +1,9 @@
-experiment: birdsnap_efficientnet_b0
-dataset: birdsnap
+experiment: cifar10_efficientnet_b0
+dataset: cifar10
 data_root: data
 model: efficientnet_b0
-num_classes: 500
-augmentation: autoaugment # torchvision ImageNet policy, applied to each training image.
+num_classes: 10
+augmentation: autoaugment
 optimizers: [sgd, sam]
 seed: 1
 
@@ -15,7 +15,6 @@ training:
   batch_size: 64
   gradient_accumulation_steps: 16
   effective_batch_size: 1024
-  num_workers: 4
   epochs: null
   max_steps: 5000
   mixed_precision: fp16
@@ -36,13 +35,4 @@ sam:
   rho: 0.05
 
 pretrained_weights: IMAGENET1K_V1
-replace_classifier: true
-image:
-  crop_size: 224
-  eval_center_crop_fraction: 0.875
-  interpolation: bicubic
-  normalization: imagenet
-  train_preprocessing: imagenet_autoaugment_then_sam_center_crop
-  eval_preprocessing: sam_center_crop_then_resize
-
 output_root: outputs

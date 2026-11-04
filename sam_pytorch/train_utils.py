@@ -572,8 +572,6 @@ def _eval_state(model, ema):
 def _plain_train_loader(data, config):
     """Complete, non-augmented training split (no dropped remainder)."""
     seed = int(config.get("seed", 1))
-    if hasattr(data, "get_plain_train_loader"):
-        return data.get_plain_train_loader(seed=seed)
     if hasattr(data, "_train_augmented"):
         return data.get_train_loader(use_augmentations=False, seed=seed)
     return data.get_train_loader(seed=seed, drop_last=False)

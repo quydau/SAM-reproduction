@@ -7,10 +7,10 @@ import logging
 import time
 from pathlib import Path
 
-from sam_pytorch.datasets import (BirdsnapDataModule,
-                                  FGVCAircraftDataModule,
+from sam_pytorch.datasets import (FGVCAircraftDataModule,
                                   Flowers102DataModule,
                                   OxfordIIITPetDataModule,
+                                  CIFAR10DataModule,
                                   CIFAR100DataModule,
                                   StanfordCarsDataModule)
 from sam_pytorch.models import create_model
@@ -48,8 +48,15 @@ def run(config, optimizer, seed, args) -> None:
         common.update(image_size=image_size,
                       image_mean=model_data["mean"],
                       image_std=model_data["std"])
-    if config["dataset"] == "cifar100":
-        # Reuse the CIFAR-100 loader and its configured augmentation policy.
+    if config["dataset"] == "cifar10":
+        data = CIFAR10DataModule(
+            data_root=config["data_root"],
+            batch_size=int(training["batch_size"]),
+            augmentation=config.get("augmentation", "none"),
+            validation_seed=int(split.get("seed", config["seed"])),
+            num_workers=int(training.get("num_workers", 0)))
+    elif config["dataset"] == "cifar100":
+        # Keep the existing CIFAR-100 split/loader; this run only adds a model.
         data = CIFAR100DataModule(
             data_root=config["data_root"],
             batch_size=int(training["batch_size"]),
@@ -64,9 +71,6 @@ def run(config, optimizer, seed, args) -> None:
         data = FGVCAircraftDataModule(**common)
     elif config["dataset"] == "stanford_cars":
         data = StanfordCarsDataModule(**common)
-    elif config["dataset"] == "birdsnap":
-        data = BirdsnapDataModule(
-            **common, augmentation=config.get("augmentation", "autoaugment"))
     else:
         raise ValueError(f"Unsupported fine-tuning dataset: {config['dataset']}")
 
