@@ -1,7 +1,7 @@
-experiment: stanford_cars_efficientnet_b4_jft
+experiment: stanford_cars_efficientnet_b3_jft
 dataset: stanford_cars
 data_root: data
-model: efficientnet_b4_jft
+model: efficientnet_b3_jft
 num_classes: 196
 optimizers: [sgd, sam]
 seed: 1
@@ -11,9 +11,9 @@ split:
   seed: 1
 
 training:
-  # RTX 3080 10 GB: larger physical batches improve throughput at 380px.
-  batch_size: 32
-  gradient_accumulation_steps: 32
+  # RTX 3080 10 GB: larger physical batches improve throughput at 300px.
+  batch_size: 16
+  gradient_accumulation_steps: 64
   effective_batch_size: 1024
   epochs: null
   max_steps: 5000
@@ -34,10 +34,10 @@ training:
 sam:
   rho: 0.05
 
-pretrained_weights: tf_efficientnet_b4.ns_jft_in1k
+pretrained_weights: tf_efficientnet_b3.ns_jft_in1k
 replace_classifier: true
 image:
-  crop_size: 380
+  crop_size: 300
   interpolation: bicubic
   normalization: model_default
   train_preprocessing: sam_center_crop_then_resize_no_augmentation

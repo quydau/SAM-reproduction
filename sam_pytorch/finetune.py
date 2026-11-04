@@ -35,11 +35,11 @@ def run(config, optimizer, seed, args) -> None:
     seed_everything(int(config["seed"]))
     model = create_model(config["model"], int(config["num_classes"]),
                          config.get("pretrained_weights"))
-    if config["model"] == "efficientnet_b4_jft":
+    if config["model"].endswith("_jft"):
         from timm.data import resolve_model_data_config
 
         model_data = resolve_model_data_config(model)
-        image_size = int(config.get("image", {}).get("crop_size", 380))
+        image_size = int(config.get("image", {}).get("crop_size", model_data["input_size"][-1]))
         expected_size = int(model_data["input_size"][-1])
         if image_size != expected_size:
             raise ValueError(
@@ -89,8 +89,9 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
     config = load_config(args.config)
-    if config["model"] not in ("efficientnet_b0", "efficientnet_b4_jft"):
-        raise ValueError("finetune.py requires an EfficientNet-B0 or B4-JFT config")
+    if config["model"] not in ("efficientnet_b0", "efficientnet_b3_jft",
+                                "efficientnet_b4_jft"):
+        raise ValueError("finetune.py requires an EfficientNet-B0, B3-JFT or B4-JFT config")
 
     seeds = args.seed or [int(config["seed"])]
     combos = list(itertools.product(

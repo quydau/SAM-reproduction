@@ -338,7 +338,7 @@ class _ImageNetDataModule:
         return _TensorBatches(
             images, labels, torch.as_tensor(indices, device=images.device),
             self.batch_size, shuffle=shuffle, seed=seed, drop_last=drop_last,
-            device=self.device, mean=self.image_mean, std=self.image_std)
+            device=images.device, mean=self.image_mean, std=self.image_std)
 
     def get_train_loader(self, seed: int = 1,
                          drop_last: bool = True) -> "_TensorBatches":
@@ -352,13 +352,13 @@ class _ImageNetDataModule:
         """
         return self._batches(self._train_dataset, self.train_indices,
                              shuffle=True, seed=seed, drop_last=drop_last,
-                             on_device=True)
+                             on_device=False)
 
     def get_validation_loader(self) -> "_TensorBatches":
         """Trả các batch validation, đọc tuần tự để đánh giá ổn định."""
         return self._batches(self._train_dataset, self.validation_indices,
                              shuffle=False, seed=0, drop_last=False,
-                             on_device=True)
+                             on_device=False)
 
     def get_test_loader(self) -> "_TensorBatches":
         """Trả các batch của partition test chính thức, không xáo trộn.
@@ -375,7 +375,8 @@ class _TensorBatches:
     Replaces a ``DataLoader`` over the deterministic (augmentation-free)
     pipeline: the shuffle order matches ``DataLoader(shuffle=True,
     generator=manual_seed(seed))``, and uint8 -> /255 -> mean/std
-    normalization is done on ``device``, as ``ToTensor`` + ``Normalize`` did.
+    normalization is done on the storage device. Fine-tuning image batches
+    remain on CPU until the training step transfers one microbatch to CUDA.
     """
 
     def __init__(self, images: torch.Tensor, labels: torch.Tensor,

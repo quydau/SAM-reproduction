@@ -318,8 +318,12 @@ def train_step(
     from the full accumulated gradient, then every microbatch is replayed at
     the perturbed weights, so the update equals one large-batch SAM step.
     """
-    moved = [_move_batch_to_model_device(model, *_unpack_batch(b)) for b in batches]
-    sizes = [int(m.sum()) if m is not None else int(i.shape[0]) for i, _, m in moved]
+    # Keep the accumulation group in host memory. Moving the whole group to
+    # CUDA here makes gradient accumulation consume nearly the same input
+    # memory as one physical batch, defeating small microbatches.
+    unpacked = [_unpack_batch(batch) for batch in batches]
+    sizes = [int(mask.sum()) if mask is not None else int(images.shape[0])
+             for images, _, mask in unpacked]
     weights = [n / max(sum(sizes), 1) for n in sizes]
     is_sam = isinstance(optimizer, SAM)
     if is_sam and l2_reg is not None:
@@ -338,7 +342,9 @@ def train_step(
         """Backward over every microbatch; returns weighted loss/error."""
         loss_sum = error_sum = 0.0
         states = []
-        for i, ((images, labels, mask), weight) in enumerate(zip(moved, weights)):
+        for i, ((images, labels, mask), weight) in enumerate(zip(unpacked, weights)):
+            images, labels, mask = _move_batch_to_model_device(
+                model, images, labels, mask)
             if rng_states is None:
                 states.append(_get_rng_state() if is_sam else None)
             else:
@@ -347,6 +353,7 @@ def train_step(
             (loss * (weight * scale)).backward()
             loss_sum = loss_sum + loss.detach() * weight
             error_sum = error_sum + error_rate_metric(logits.detach(), labels, mask) * weight
+            del images, labels, mask, logits, loss
         return loss_sum, error_sum, states
 
     optimizer.zero_grad(set_to_none=True)

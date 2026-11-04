@@ -10,7 +10,7 @@ Các nhóm thực nghiệm theo kế hoạch:
 
 - CIFAR-10 và CIFAR-100, WRN-16-8 huấn luyện từ đầu với `basic`, `cutout`, `autoaugment`.
 - Fine-tune EfficientNet-B0 trên Flowers102, Oxford-IIIT Pet, FGVC Aircraft và Stanford Cars.
-- Fine-tune EfficientNet-B4 với weights `tf_efficientnet_b4.ns_jft_in1k` trên Flowers102, Stanford Cars và Oxford-IIIT Pet.
+- Fine-tune EfficientNet-B3 với weights `tf_efficientnet_b3.ns_jft_in1k` trên Flowers102, Stanford Cars và Oxford-IIIT Pet.
 - Fine-tune thêm EfficientNet-B0 trên CIFAR-100 với cùng recipe EfficientNet.
 - Ba seed ghép cặp giữa SGD và SAM cho mỗi điều kiện; chọn checkpoint trên validation rồi đánh giá test một lần.
 
@@ -24,12 +24,12 @@ Paper báo cáo năm lần chạy độc lập cho fine-tuning. Ba seed hiện d
 | CIFAR augmentation | Basic: reflect-pad 4, random crop + flip; AutoAugment CIFAR rồi basic; Cutout: mask 16×16 chung batch sau normalization | Paper Appendix C; thứ tự/policy/chi tiết mask theo repo chính thức |
 | Fine-tune Flowers/Pet theo C.2 | WD 1e-5; LR 0.016 với batch 1024, LR 0.008 với batch 512; cosine; momentum 0.9; đóng băng thống kê BatchNorm; không augmentation. | Paper Appendix C.2. Repo SAM không dispatch Flowers/Pet; preprocessing ở đây dùng center crop, resize và ImageNet normalization, không có phép biến đổi ngẫu nhiên. |
 | Fine-tune FGVC Aircraft/Stanford Cars | Dùng cùng recipe EfficientNet-B0, batch hiệu dụng 1024, 5.000 bước, LR 0.016; validation stratified 10% từ train chính thức | Cấu hình theo recipe C.2 của repo; tập Cars lấy từ mirror Hugging Face vì URL gốc không còn hoạt động. |
-| EfficientNet-B4 JFT trên Flowers102/Pet/Cars | `tf_efficientnet_b4.ns_jft_in1k`, ảnh 380×380, batch hiệu dụng 1024 (32 × 32), 5.000 bước; giữ nguyên LR, optimizer và SAM như recipe B0 | Weights Noisy Student được train trên ImageNet-1k và JFT-300M; kích thước ảnh và normalization lấy từ pretrained config của timm. |
+| EfficientNet-B3 JFT trên Flowers102/Pet/Cars | `tf_efficientnet_b3.ns_jft_in1k`, ảnh 300×300, batch hiệu dụng 1024 (8 × 128), 5.000 bước; giữ nguyên LR, optimizer và SAM như recipe B0 | Weights Noisy Student được train trên ImageNet-1k và JFT-300M; kích thước ảnh và normalization lấy từ pretrained config của timm. |
 | Fine-tune đề xuất cho T4 | Batch hiệu dụng 256 (microbatch 16 × tích lũy 16), LR 0.004, 20,000 bước, WD 1e-5, `rho=0.05`, EfficientNet-B0 | Batch/LR/steps là suy luận để khớp xấp xỉ số mẫu đã thấy: LR scale tuyến tính từ C.2; 20k × 256 tương đương 5k × 1024. B0 là thay đổi để phù hợp bộ nhớ, không phải model trong paper |
 
 Các giá trị cho CIFAR được nêu trực tiếp trong paper. `rho=0.05` là lựa chọn có căn cứ: paper dùng giá trị này cho CIFAR-10 và cũng báo cáo kết quả fine-tuning với `rho=0.05`; kết quả fine-tuning tốt nhất có thể dùng rho đã tinh chỉnh riêng. Với Flowers/Pet, LR 0.004 và batch hiệu dụng 256 là ngoại suy theo tỷ lệ từ 0.016 @ 1024 và 0.008 @ 512. Paper không xác nhận trực tiếp giá trị 0.004. Weights ImageNet1K_V1 và kích thước đầu vào 224 là thay đổi để dùng EfficientNet-B0; cách crop/resize theo code SAM, không dùng transform dành riêng cho inference của torchvision.
 
-Các cấu hình B4 giữ batch hiệu dụng và hyperparameter của recipe fine-tuning hiện tại, với microbatch 32 để tận dụng RTX 3080 ở ảnh 380×380. Nếu VRAM không đủ, giảm `batch_size` xuống 16 và tăng `gradient_accumulation_steps` lên 64. Data loader dùng center crop, bicubic resize và mean/std do `timm` khai báo cho checkpoint; ảnh train/validation/test không augmentation.
+Các cấu hình B3 giữ batch hiệu dụng và hyperparameter của recipe fine-tuning hiện tại, với microbatch 8 và tích lũy 128 bước. Ảnh train/validation được lưu dạng uint8 trên CPU; từng microbatch được chuẩn hóa trên CPU rồi chuyển lên GPU khi tính gradient. SAM tính gradient hai lượt bằng cách phát lại cùng microbatch và RNG, giữ phép cập nhật theo batch hiệu dụng. Data loader dùng center crop, bicubic resize và mean/std do `timm` khai báo cho checkpoint; ảnh train/validation/test không augmentation.
 
 `nesterov: true` được đặt rõ trong optimizer SGD của repo SAM. Với CIFAR, `gradient_clip_norm: 5.0` và `label_smoothing: 0.0` giữ mặc định code path của repo gốc. Với fine-tuning EfficientNet, cấu hình dùng `gradient_clip_norm: 1.0` và `label_smoothing: 0.1` theo lệnh fine-tune EfficientNet trong README của [repo SAM gốc](../sam/README.md); đây là cấu hình lệnh ví dụ cho EfficientNet-L2 trên ImageNet, được áp dụng cho fine-tune B0 Flowers/Pet của đồ án, không phải giá trị được báo cáo trực tiếp trong paper C.2.
 
@@ -52,9 +52,9 @@ python -m sam_pytorch.finetune --config configs/oxford_iiit_pet_efficientnet_b0.
 python -m sam_pytorch.finetune --config configs/fgvc_aircraft_efficientnet_b0.yaml --optimizer sgd sam --seed 1
 python -m sam_pytorch.finetune --config configs/stanford_cars_efficientnet_b0.yaml --optimizer sam --seed 1
 python -m sam_pytorch.finetune --config configs/cifar100_efficientnet_b0.yaml --optimizer sgd sam --seed 1
-python -m sam_pytorch.finetune --config configs/flowers102_efficientnet_b4_jft.yaml --optimizer sgd sam --seed 1
-python -m sam_pytorch.finetune --config configs/stanford_cars_efficientnet_b4_jft.yaml --optimizer sgd sam --seed 1
-python -m sam_pytorch.finetune --config configs/oxford_iiit_pet_efficientnet_b4_jft.yaml --optimizer sgd sam --seed 1
+python -m sam_pytorch.finetune --config configs/flowers102_efficientnet_b3_jft.yaml --optimizer sgd sam --seed 1
+python -m sam_pytorch.finetune --config configs/stanford_cars_efficientnet_b3_jft.yaml --optimizer sgd sam --seed 1
+python -m sam_pytorch.finetune --config configs/oxford_iiit_pet_efficientnet_b3_jft.yaml --optimizer sgd sam --seed 1
 
 # Nhiều giá trị trong một lệnh (tuần tự): 3 seed x 3 augmentation x 2 optimizer = 18 run
 python -m sam_pytorch.train --config configs/cifar10_wrn16x8.yaml \
