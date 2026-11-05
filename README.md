@@ -25,16 +25,16 @@ Paper báo cáo năm lần chạy độc lập cho fine-tuning. Ba seed hiện d
 | CIFAR augmentation | Basic: reflect-pad 4, random crop + flip; AutoAugment CIFAR rồi basic; Cutout: mask 16×16 chung batch sau normalization | Paper Appendix C; thứ tự/policy/chi tiết mask theo repo chính thức |
 | Fine-tune Flowers/Pet theo C.2 | WD 1e-5; LR 0.016 với batch 1024, LR 0.008 với batch 512; cosine; momentum 0.9; đóng băng thống kê BatchNorm; không augmentation. | Paper Appendix C.2. Repo SAM không dispatch Flowers/Pet; preprocessing ở đây dùng center crop, resize và ImageNet normalization, không có phép biến đổi ngẫu nhiên. |
 | Fine-tune FGVC Aircraft/Stanford Cars | Dùng cùng recipe EfficientNet-B0, batch hiệu dụng 1024, 5.000 bước, LR 0.016; validation stratified 10% từ train chính thức | Cấu hình theo recipe C.2 của repo; tập Cars lấy từ mirror Hugging Face vì URL gốc không còn hoạt động. |
-| EfficientNet-B3 JFT trên Flowers102/Pet/Cars | `tf_efficientnet_b3.ns_jft_in1k`, ảnh 300×300, batch hiệu dụng 1024 (8 × 128), 5.000 bước; giữ nguyên LR, optimizer và SAM như recipe B0 | Weights Noisy Student được train trên ImageNet-1k và JFT-300M; kích thước ảnh và normalization lấy từ pretrained config của timm. |
+| EfficientNet-B3 JFT trên Flowers102/Pet/Cars | `tf_efficientnet_b3.ns_jft_in1k`, ảnh 300×300, batch hiệu dụng 1024; config Flowers102 dùng microbatch 32 × tích lũy 32 trên T4, 5.000 bước; giữ LR, optimizer và SAM như recipe B0 | Weights Noisy Student được train trên ImageNet-1k và JFT-300M; kích thước ảnh và normalization lấy từ pretrained config của timm. |
 | Fine-tune đề xuất cho T4 | Batch hiệu dụng 256 (microbatch 16 × tích lũy 16), LR 0.004, 20,000 bước, WD 1e-5, `rho=0.05`, EfficientNet-B0 | Batch/LR/steps là suy luận để khớp xấp xỉ số mẫu đã thấy: LR scale tuyến tính từ C.2; 20k × 256 tương đương 5k × 1024. B0 là thay đổi để phù hợp bộ nhớ, không phải model trong paper |
 
 Các giá trị cho CIFAR được nêu trực tiếp trong paper. `rho=0.05` là lựa chọn có căn cứ: paper dùng giá trị này cho CIFAR-10 và cũng báo cáo kết quả fine-tuning với `rho=0.05`; kết quả fine-tuning tốt nhất có thể dùng rho đã tinh chỉnh riêng. Với Flowers/Pet, LR 0.004 và batch hiệu dụng 256 là ngoại suy theo tỷ lệ từ 0.016 @ 1024 và 0.008 @ 512. Paper không xác nhận trực tiếp giá trị 0.004. Weights ImageNet1K_V1 và kích thước đầu vào 224 là thay đổi để dùng EfficientNet-B0; cách crop/resize theo code SAM, không dùng transform dành riêng cho inference của torchvision.
 
-Các cấu hình B3 giữ batch hiệu dụng và hyperparameter của recipe fine-tuning hiện tại, với microbatch 8 và tích lũy 128 bước. Ảnh train/validation được lưu dạng uint8 trên CPU; từng microbatch được chuẩn hóa trên CPU rồi chuyển lên GPU khi tính gradient. SAM tính gradient hai lượt bằng cách phát lại cùng microbatch và RNG, giữ phép cập nhật theo batch hiệu dụng. Data loader dùng center crop, bicubic resize và mean/std do `timm` khai báo cho checkpoint; ảnh train/validation/test không augmentation.
+Các cấu hình B3 giữ batch hiệu dụng và hyperparameter của recipe fine-tuning hiện tại. Config Flowers102 dùng microbatch 32 và tích lũy 32 bước cho hai GPU T4; nếu một GPU không đủ VRAM, giảm microbatch xuống 16 và tăng tích lũy lên 64. Ảnh train/validation được lưu dạng uint8 trên CPU; từng microbatch được chuẩn hóa trên CPU rồi chuyển lên GPU khi tính gradient. SAM tính gradient hai lượt bằng cách phát lại cùng microbatch và RNG, giữ phép cập nhật theo batch hiệu dụng. Data loader dùng center crop, bicubic resize và mean/std do `timm` khai báo cho checkpoint; ảnh train/validation/test không augmentation.
 
 `nesterov: true` được đặt rõ trong optimizer SGD của repo SAM. Với CIFAR, `gradient_clip_norm: 5.0` và `label_smoothing: 0.0` giữ mặc định code path của repo gốc. Với fine-tuning EfficientNet, cấu hình dùng `gradient_clip_norm: 1.0` và `label_smoothing: 0.1` theo lệnh fine-tune EfficientNet trong README của [repo SAM gốc](../sam/README.md); đây là cấu hình lệnh ví dụ cho EfficientNet-L2 trên ImageNet, được áp dụng cho fine-tune B0 Flowers/Pet của đồ án, không phải giá trị được báo cáo trực tiếp trong paper C.2.
 
-Trên T4 16 GB, cấu hình CIFAR dùng microbatch 64 × tích lũy 4; fine-tuning dùng microbatch 16 × tích lũy 16. Đây là ước lượng ban đầu, cần giảm microbatch nếu gặp out-of-memory. Tích lũy gradient giữ batch hiệu dụng cho bước tối ưu, nhưng BatchNorm trong WRN vẫn thống kê trên microbatch vật lý; điều này có thể làm kết quả lệch khỏi batch 256 thực sự. Fine-tuning cố định BatchNorm ở chế độ eval như C.2, nên vấn đề này không áp dụng cùng cách cho EfficientNet. Đối với Flowers/Pet, repo gốc không có nhánh dataset; theo C.2, loader dùng cùng preprocessing xác định cho train/validation/test: center crop 87.5% cạnh ngắn, resize bicubic về 224×224 và ImageNet normalization. Không áp dụng random crop, flip hay RandAugment.
+Trên T4 16 GB, cấu hình CIFAR dùng microbatch 64 × tích lũy 4; các config fine-tuning B0 dùng microbatch 16 × tích lũy 16. B3 Flowers102 có cấu hình riêng 32 × 32 bên dưới. Đây là ước lượng ban đầu, cần giảm microbatch nếu gặp out-of-memory. Tích lũy gradient giữ batch hiệu dụng cho bước tối ưu, nhưng BatchNorm trong WRN vẫn thống kê trên microbatch vật lý; điều này có thể làm kết quả lệch khỏi batch 256 thực sự. Fine-tuning cố định BatchNorm ở chế độ eval như C.2, nên vấn đề này không áp dụng cùng cách cho EfficientNet. Đối với Flowers/Pet, repo gốc không có nhánh dataset; theo C.2, loader dùng cùng preprocessing xác định cho train/validation/test: center crop 87.5% cạnh ngắn, resize bicubic về 224×224 và ImageNet normalization. Không áp dụng random crop, flip hay RandAugment.
 
 Để phù hợp thiết kế đồ án, kế hoạch dùng validation split cố định 10% ở CIFAR và Flowers/Pet, cùng ba seed. Flowers102 gộp split `train` và `val` có sẵn của torchvision rồi chia stratified 90/10; Oxford-IIIT Pet chia stratified 90/10 từ split `trainval`. Đây là quy ước triển khai của repo; paper dùng validation 10% để chọn rho trong một số thí nghiệm nhưng không mô tả đúng split này cho toàn bộ pipeline. Không dùng test set để chọn hyperparameter hoặc checkpoint. Repo SAM khai báo tên Flowers/Pet trong enum nhưng không dispatch các dataset này trong `main`, nên split và preprocessing hiện tại là lựa chọn mới của đồ án, không phải port tương đương từ code SAM.
 
@@ -65,9 +65,34 @@ python -m sam_pytorch.finetune --config configs/flowers102_efficientnet_b0.yaml 
 python -m sam_pytorch.finetune --config configs/stanford_cars_efficientnet_b0.yaml --optimizer sgd sam --seed 1 2 3
 ```
 
+### Chạy song song SGD và SAM trên 2 GPU T4 ở Kaggle (Flowers102 B3)
+
+Trong Kaggle, bật Internet cho notebook nếu đây là lần tải đầu tiên. Flowers102 được tải/giải nén khi tạo data module, còn tensor ảnh được cache lười vào `data/flowers-102-hf/`; hai tiến trình cùng tạo cache lần đầu có thể ghi vào cùng file tạm. Vì vậy hãy chạy lệnh chuẩn bị **một lần và đợi kết thúc thành công** trước khi khởi chạy SGD/SAM. Module này tải/cache train, validation, test và checkpoint B3 tuần tự.
+
+```bash
+python -m sam_pytorch.prepare_dataset
+
+mkdir -p logs
+CUDA_VISIBLE_DEVICES=0 python -u -m sam_pytorch.finetune \
+  --config configs/flowers102_efficientnet_b3_jft.yaml \
+  --optimizer sgd --seed 1 > logs/flowers102_b3_sgd.log 2>&1 &
+SGD_PID=$!
+CUDA_VISIBLE_DEVICES=1 python -u -m sam_pytorch.finetune \
+  --config configs/flowers102_efficientnet_b3_jft.yaml \
+  --optimizer sam --seed 1 > logs/flowers102_b3_sam.log 2>&1 &
+set +e
+wait "$SGD_PID"; SGD_STATUS=$?
+wait "$SAM_PID"; SAM_STATUS=$?
+echo "SGD exit=$SGD_STATUS; SAM exit=$SAM_STATUS"
+echo "Logs: logs/flowers102_b3_sgd.log, logs/flowers102_b3_sam.log"
+if [ "$SGD_STATUS" -ne 0 ] || [ "$SAM_STATUS" -ne 0 ]; then exit 1; fi
+```
+
+`CUDA_VISIBLE_DEVICES=0` và `=1` giả định Kaggle hiển thị hai GPU theo thứ tự đó; kiểm tra bằng `nvidia-smi -L` nếu cần. Mỗi tiến trình chỉ thấy một GPU vật lý, được PyTorch đánh số nội bộ là `cuda:0`. Hai optimizer ghi vào thư mục output riêng. Nếu gặp CUDA out-of-memory, dừng cả hai tiến trình, đổi `batch_size` thành 16 và `gradient_accumulation_steps` thành 64 trong YAML rồi chạy lại; cả hai cách giữ `effective_batch_size: 1024`.
+
 Để chạy thử ngắn, truyền **một** trong `--epochs N` hoặc `--steps N`. Tham số được chọn ghi đè giới hạn tương ứng trong YAML; hai cờ không dùng đồng thời. Nếu không truyền cờ giới hạn, chương trình dùng nguyên `training.epochs` hoặc `training.max_steps` trong YAML. `--steps` là số lần cập nhật optimizer. Ví dụ `--steps 5` cho fine-tuning hoặc `--epochs 2` cho CIFAR. Tiến độ epoch được in ra terminal và append ngay vào `train.log`; `metrics.csv`, `metrics.txt` (báo cáo tiến độ trong lúc chạy) và checkpoint cũng được cập nhật sau mỗi epoch. Khi hoàn tất, `metrics.txt`/`results.txt` chứa báo cáo đầy đủ; test được đánh giá một lần. Báo cáo gồm `test_error`, classification report theo lớp và confusion matrix. Trên Mac, cài PyTorch/torchvision bản macOS; MPS được tự chọn khi có GPU Apple Silicon.
 
-Các lệnh nhiều giá trị ở trên đã thay cho vòng lặp shell; thêm `--epochs 2` hoặc `--steps 5` để smoke-run. Các run chạy nối tiếp trong cùng một tiến trình, không song song (một GPU T4 không đủ chỗ cho nhiều run cùng lúc).
+Các lệnh nhiều giá trị ở trên đã thay cho vòng lặp shell; thêm `--epochs 2` hoặc `--steps 5` để smoke-run. Những tổ hợp trong cùng một lệnh fine-tune thường chạy nối tiếp; riêng ví dụ Kaggle phía trên khởi chạy hai tiến trình độc lập trên hai GPU.
 
 Output có dạng:
 

@@ -11,9 +11,10 @@ split:
   seed: 1
 
 training:
-  # RTX 3080 10 GB: larger physical batches improve throughput at 300px.
-  batch_size: 16
-  gradient_accumulation_steps: 64
+  # NVIDIA T4 16 GB: larger microbatch for throughput at 300px; accumulation
+  # keeps the effective batch at 1024 for the existing learning-rate recipe.
+  batch_size: 32
+  gradient_accumulation_steps: 32
   effective_batch_size: 1024
   epochs: null
   max_steps: 5000
