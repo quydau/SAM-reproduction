@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from sam_pytorch.datasets import (FGVCAircraftDataModule,
+                                  Food101DataModule,
                                   Flowers102DataModule,
                                   OxfordIIITPetDataModule,
                                   CIFAR10DataModule,
@@ -65,6 +66,8 @@ def run(config, optimizer, seed, args) -> None:
             num_workers=int(training.get("num_workers", 0)))
     elif config["dataset"] == "flowers102":
         data = Flowers102DataModule(**common)
+    elif config["dataset"] == "food101":
+        data = Food101DataModule(**common)
     elif config["dataset"] == "oxford_iiit_pet":
         data = OxfordIIITPetDataModule(**common)
     elif config["dataset"] == "fgvc_aircraft":

@@ -13,6 +13,7 @@ Các nhóm thực nghiệm theo kế hoạch:
 - Fine-tune EfficientNet-B3 với weights `tf_efficientnet_b3.ns_jft_in1k` trên Flowers102, Stanford Cars và Oxford-IIIT Pet.
 - Fine-tune thêm EfficientNet-B0 trên CIFAR-100 với cùng recipe EfficientNet.
 - Fine-tune EfficientNet-B0 trên CIFAR-10 với cùng recipe và AutoAugment CIFAR.
+- Fine-tune EfficientNet-B0 trên Food101 với recipe Flowers102; dùng split train/test chính thức và giữ 10% train làm validation stratified. Ảnh 224×224 dạng uint8 được cache memory-mapped ở `data/food101-cache/` (khoảng 15 GB) để không giữ toàn bộ ảnh trong RAM.
 - Ba seed ghép cặp giữa SGD và SAM cho mỗi điều kiện; chọn checkpoint trên validation rồi đánh giá test một lần.
 
 Paper báo cáo năm lần chạy độc lập cho fine-tuning. Ba seed hiện dùng là giới hạn phạm vi đồ án; vì vậy độ bất định thống kê sẽ khác paper. Ngoài ra, paper fine-tune EfficientNet-B7 và EfficientNet-L2 với checkpoint công khai, trong khi cấu hình T4 ở đây dùng EfficientNet-B0 với weights ImageNet từ torchvision. Đây là tái lập có điều chỉnh về mô hình/phần cứng, không phải kết quả số học tương đương với thí nghiệm gốc.
@@ -49,6 +50,7 @@ python -m sam_pytorch.train --config configs/cifar10_wrn16x8.yaml --augmentation
 python -m sam_pytorch.train --config configs/cifar10_wrn16x8.yaml --augmentation autoaugment --optimizer sgd --seed 3
 python -m sam_pytorch.train --config configs/cifar100_wrn16x8.yaml --augmentation basic --optimizer sam --seed 1
 python -m sam_pytorch.finetune --config configs/flowers102_efficientnet_b0.yaml --optimizer sgd --seed 1
+python -m sam_pytorch.finetune --config configs/food101_efficientnet_b0.yaml --optimizer sgd sam --seed 1
 python -m sam_pytorch.finetune --config configs/oxford_iiit_pet_efficientnet_b0.yaml --optimizer sam --seed 2
 python -m sam_pytorch.finetune --config configs/fgvc_aircraft_efficientnet_b0.yaml --optimizer sgd sam --seed 1
 python -m sam_pytorch.finetune --config configs/stanford_cars_efficientnet_b0.yaml --optimizer sam --seed 1
@@ -70,7 +72,7 @@ python -m sam_pytorch.finetune --config configs/stanford_cars_efficientnet_b0.ya
 Trong Kaggle, bật Internet cho notebook nếu đây là lần tải đầu tiên. Flowers102 được tải/giải nén khi tạo data module, còn tensor ảnh được cache lười vào `data/flowers-102-hf/`; hai tiến trình cùng tạo cache lần đầu có thể ghi vào cùng file tạm. Vì vậy hãy chạy lệnh chuẩn bị **một lần và đợi kết thúc thành công** trước khi khởi chạy SGD/SAM. Module này tải/cache train, validation, test và checkpoint B3 tuần tự.
 
 ```bash
-python -m sam_pytorch.prepare_dataset
+python -m sam_pytorch.prepare_dataset --dataset flowers102
 
 mkdir -p logs
 CUDA_VISIBLE_DEVICES=0 python -u -m sam_pytorch.finetune \
@@ -80,6 +82,7 @@ SGD_PID=$!
 CUDA_VISIBLE_DEVICES=1 python -u -m sam_pytorch.finetune \
   --config configs/flowers102_efficientnet_b3_jft.yaml \
   --optimizer sam --seed 1 > logs/flowers102_b3_sam.log 2>&1 &
+SAM_PID=$!
 set +e
 wait "$SGD_PID"; SGD_STATUS=$?
 wait "$SAM_PID"; SAM_STATUS=$?
@@ -90,9 +93,35 @@ if [ "$SGD_STATUS" -ne 0 ] || [ "$SAM_STATUS" -ne 0 ]; then exit 1; fi
 
 `CUDA_VISIBLE_DEVICES=0` và `=1` giả định Kaggle hiển thị hai GPU theo thứ tự đó; kiểm tra bằng `nvidia-smi -L` nếu cần. Mỗi tiến trình chỉ thấy một GPU vật lý, được PyTorch đánh số nội bộ là `cuda:0`. Hai optimizer ghi vào thư mục output riêng. Nếu gặp CUDA out-of-memory, dừng cả hai tiến trình, đổi `batch_size` thành 16 và `gradient_accumulation_steps` thành 64 trong YAML rồi chạy lại; cả hai cách giữ `effective_batch_size: 1024`.
 
+### Chạy song song SGD và SAM trên 2 GPU T4 ở Kaggle (Food101 B0)
+
+Bật Internet trong Kaggle nếu đây là lần tải đầu tiên. Lệnh chuẩn bị tải split train/test và weights ImageNet của B0, sau đó tạo cache ảnh 224×224 ở `data/food101-cache/`. Cache tensor chiếm khoảng 15 GB; chờ lệnh prepare hoàn tất trước khi chạy hai tiến trình để chúng không ghi cache đồng thời.
+
+```bash
+python -m sam_pytorch.prepare_dataset --dataset food101
+
+mkdir -p logs
+CUDA_VISIBLE_DEVICES=0 python -u -m sam_pytorch.finetune \
+  --config configs/food101_efficientnet_b0.yaml \
+  --optimizer sgd --seed 1 > logs/food101_b0_sgd.log 2>&1 &
+SGD_PID=$!
+CUDA_VISIBLE_DEVICES=1 python -u -m sam_pytorch.finetune \
+  --config configs/food101_efficientnet_b0.yaml \
+  --optimizer sam --seed 1 > logs/food101_b0_sam.log 2>&1 &
+SAM_PID=$!
+set +e
+wait "$SGD_PID"; SGD_STATUS=$?
+wait "$SAM_PID"; SAM_STATUS=$?
+echo "SGD exit=$SGD_STATUS; SAM exit=$SAM_STATUS"
+echo "Logs: logs/food101_b0_sgd.log, logs/food101_b0_sam.log"
+if [ "$SGD_STATUS" -ne 0 ] || [ "$SAM_STATUS" -ne 0 ]; then exit 1; fi
+```
+
+Các biến `CUDA_VISIBLE_DEVICES` giả định Kaggle hiển thị hai GPU theo thứ tự 0 và 1; kiểm tra bằng `nvidia-smi -L` nếu cần. Mỗi tiến trình dùng một GPU và lưu output riêng. Nếu gặp CUDA out-of-memory, dừng cả hai, đổi `batch_size` thành 32 và `gradient_accumulation_steps` thành 32 trong YAML rồi chạy lại; batch hiệu dụng vẫn là 1024.
+
 Để chạy thử ngắn, truyền **một** trong `--epochs N` hoặc `--steps N`. Tham số được chọn ghi đè giới hạn tương ứng trong YAML; hai cờ không dùng đồng thời. Nếu không truyền cờ giới hạn, chương trình dùng nguyên `training.epochs` hoặc `training.max_steps` trong YAML. `--steps` là số lần cập nhật optimizer. Ví dụ `--steps 5` cho fine-tuning hoặc `--epochs 2` cho CIFAR. Tiến độ epoch được in ra terminal và append ngay vào `train.log`; `metrics.csv`, `metrics.txt` (báo cáo tiến độ trong lúc chạy) và checkpoint cũng được cập nhật sau mỗi epoch. Khi hoàn tất, `metrics.txt`/`results.txt` chứa báo cáo đầy đủ; test được đánh giá một lần. Báo cáo gồm `test_error`, classification report theo lớp và confusion matrix. Trên Mac, cài PyTorch/torchvision bản macOS; MPS được tự chọn khi có GPU Apple Silicon.
 
-Các lệnh nhiều giá trị ở trên đã thay cho vòng lặp shell; thêm `--epochs 2` hoặc `--steps 5` để smoke-run. Những tổ hợp trong cùng một lệnh fine-tune thường chạy nối tiếp; riêng ví dụ Kaggle phía trên khởi chạy hai tiến trình độc lập trên hai GPU.
+Các lệnh nhiều giá trị ở trên đã thay cho vòng lặp shell; thêm `--epochs 2` hoặc `--steps 5` để smoke-run. Những tổ hợp trong cùng một lệnh fine-tune thường chạy nối tiếp; các ví dụ Kaggle phía trên khởi chạy hai tiến trình độc lập trên hai GPU.
 
 Output có dạng:
 

@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torchvision import transforms
 from torchvision.transforms import functional as TF
 from torchvision.transforms import InterpolationMode
-from torchvision.datasets import CIFAR10, CIFAR100
+from torchvision.datasets import CIFAR10, CIFAR100, Food101
 from PIL import Image
 
 from sam_pytorch.augmentation import CIFAR10Augmentation
@@ -326,7 +326,10 @@ class _ImageNetDataModule:
         if key not in self._tensor_cache:
             parts = (dataset.datasets if isinstance(dataset, ConcatDataset)
                      else [dataset])
-            images = torch.cat([part.uint8_tensors() for part in parts])
+            # Avoid copying a single large memory-mapped dataset (Food101) into
+            # RAM. Concatenation is only needed for datasets with multiple parts.
+            images = (parts[0].uint8_tensors() if len(parts) == 1 else
+                      torch.cat([part.uint8_tensors() for part in parts]))
             if on_device:
                 images = images.to(self.device)
             labels = torch.tensor([label for part in parts
@@ -571,6 +574,72 @@ class Flowers102DataModule(_ImageNetDataModule):
                          split_seed, num_workers, pin_memory,
                          image_mean, image_std)
         self.class_names = train.class_names
+
+
+class _Food101ImageDataset(Dataset):
+    """Food101 split with deterministic image preprocessing cached on disk."""
+
+    def __init__(self, source: Food101, cache_dir: Path, image_size: int):
+        self.source = source
+        self.cache_dir = Path(cache_dir)
+        self.image_size = image_size
+        self.transform = _imagenet_transform(image_size)
+        self._labels = list(source._labels)
+        self.class_names = list(source.classes)
+
+    def __len__(self) -> int:
+        return len(self._labels)
+
+    def __getitem__(self, index: int):
+        image, label = self.source[index]
+        return self.transform(image), label
+
+    def uint8_tensors(self) -> torch.Tensor:
+        """Return a disk-backed tensor to keep the 75k-image train set in RAM-light form."""
+        import numpy as np
+
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        path = self.cache_dir / f"tensors_{self.image_size}.uint8"
+        marker = path.with_suffix(path.suffix + ".complete")
+        shape = (len(self), 3, self.image_size, self.image_size)
+        if not marker.exists():
+            marker.unlink(missing_ok=True)
+            images = torch.from_file(
+                str(path), shared=True, size=int(np.prod(shape)), dtype=torch.uint8
+            ).view(shape)
+            for index in range(len(self)):
+                images[index].copy_(self[index][0])
+            del images
+            marker.touch()
+        return torch.from_file(
+            str(path), shared=False, size=int(np.prod(shape)), dtype=torch.uint8
+        ).view(shape)
+
+
+class Food101DataModule(_ImageNetDataModule):
+    """Food101 loaders; official test split and seeded stratified validation."""
+
+    NUM_CLASSES = 101
+
+    def __init__(self, data_root: str | Path, batch_size: int,
+                 validation_fraction: float = 0.1, split_seed: int = 1,
+                 num_workers: int = 4, pin_memory: Optional[bool] = None,
+                 image_size: int = 224,
+                 image_mean=(0.485, 0.456, 0.406),
+                 image_std=(0.229, 0.224, 0.225)):
+        self.data_root = Path(data_root)
+        train = Food101(root=str(self.data_root), split="train", download=True)
+        test = Food101(root=str(self.data_root), split="test", download=False)
+        cache = self.data_root / "food101-cache"
+        self._train_dataset = _Food101ImageDataset(
+            train, cache / "train", image_size)
+        self._test_dataset = _Food101ImageDataset(
+            test, cache / "test", image_size)
+        self._split_labels = list(self._train_dataset._labels)
+        super().__init__(data_root, batch_size, validation_fraction,
+                         split_seed, num_workers, pin_memory,
+                         image_mean, image_std)
+        self.class_names = self._train_dataset.class_names
 
 
 class OxfordIIITPetDataModule(_ImageNetDataModule):
