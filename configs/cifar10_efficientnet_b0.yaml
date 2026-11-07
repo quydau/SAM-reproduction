@@ -17,11 +17,11 @@ training:
   gradient_accumulation_steps: 16
   effective_batch_size: 1024
   epochs: null
-  max_steps: 5000
+  max_steps: 10000
   mixed_precision: fp16
   channels_last: true
   cudnn_benchmark: true
-  learning_rate: 0.1
+  learning_rate: 0.15
   scheduler: cosine
   weight_decay: 0.00001
   momentum: 0.9

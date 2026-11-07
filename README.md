@@ -119,6 +119,32 @@ if [ "$SGD_STATUS" -ne 0 ] || [ "$SAM_STATUS" -ne 0 ]; then exit 1; fi
 
 Các biến `CUDA_VISIBLE_DEVICES` giả định Kaggle hiển thị hai GPU theo thứ tự 0 và 1; kiểm tra bằng `nvidia-smi -L` nếu cần. Mỗi tiến trình dùng một GPU và lưu output riêng. Nếu gặp CUDA out-of-memory, dừng cả hai, đổi `batch_size` thành 32 và `gradient_accumulation_steps` thành 32 trong YAML rồi chạy lại; batch hiệu dụng vẫn là 1024.
 
+### Chạy song song SGD và SAM trên 2 GPU T4 ở Kaggle (CIFAR10 EfficientNetB0)
+
+Bật Internet trong Kaggle nếu đây là lần tải đầu tiên. Lệnh prepare tải dữ liệu CIFAR10 và weights ImageNet của EfficientNetB0 trước khi chạy hai tiến trình, tránh tải đồng thời. Augmentation AutoAugment được áp dụng khi train; ảnh không cần tạo cache 224×224.
+
+```bash
+python -m sam_pytorch.prepare_dataset --dataset cifar10
+
+mkdir -p logs
+CUDA_VISIBLE_DEVICES=0 python -u -m sam_pytorch.finetune \
+  --config configs/cifar10_efficientnet_b0.yaml \
+  --optimizer sgd --seed 1 > logs/cifar10_b0_sgd.log 2>&1 &
+SGD_PID=$!
+CUDA_VISIBLE_DEVICES=1 python -u -m sam_pytorch.finetune \
+  --config configs/cifar10_efficientnet_b0.yaml \
+  --optimizer sam --seed 1 > logs/cifar10_b0_sam.log 2>&1 &
+SAM_PID=$!
+set +e
+wait "$SGD_PID"; SGD_STATUS=$?
+wait "$SAM_PID"; SAM_STATUS=$?
+echo "SGD exit=$SGD_STATUS; SAM exit=$SAM_STATUS"
+echo "Logs: logs/cifar10_b0_sgd.log, logs/cifar10_b0_sam.log"
+if [ "$SGD_STATUS" -ne 0 ] || [ "$SAM_STATUS" -ne 0 ]; then exit 1; fi
+```
+
+`CUDA_VISIBLE_DEVICES=0` và `=1` giả định Kaggle hiển thị hai GPU theo thứ tự đó. Mỗi tiến trình dùng một GPU riêng. Nếu gặp CUDA out-of-memory, dừng cả hai, đổi `batch_size` thành 32 và `gradient_accumulation_steps` thành 32 trong YAML; batch hiệu dụng vẫn là 1024.
+
 Để chạy thử ngắn, truyền **một** trong `--epochs N` hoặc `--steps N`. Tham số được chọn ghi đè giới hạn tương ứng trong YAML; hai cờ không dùng đồng thời. Nếu không truyền cờ giới hạn, chương trình dùng nguyên `training.epochs` hoặc `training.max_steps` trong YAML. `--steps` là số lần cập nhật optimizer. Ví dụ `--steps 5` cho fine-tuning hoặc `--epochs 2` cho CIFAR. Tiến độ epoch được in ra terminal và append ngay vào `train.log`; `metrics.csv`, `metrics.txt` (báo cáo tiến độ trong lúc chạy) và checkpoint cũng được cập nhật sau mỗi epoch. Khi hoàn tất, `metrics.txt`/`results.txt` chứa báo cáo đầy đủ; test được đánh giá một lần. Báo cáo gồm `test_error`, classification report theo lớp và confusion matrix. Trên Mac, cài PyTorch/torchvision bản macOS; MPS được tự chọn khi có GPU Apple Silicon.
 
 Các lệnh nhiều giá trị ở trên đã thay cho vòng lặp shell; thêm `--epochs 2` hoặc `--steps 5` để smoke-run. Những tổ hợp trong cùng một lệnh fine-tune thường chạy nối tiếp; các ví dụ Kaggle phía trên khởi chạy hai tiến trình độc lập trên hai GPU.

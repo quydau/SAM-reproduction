@@ -2,7 +2,8 @@
 
 import argparse
 
-from sam_pytorch.datasets import Food101DataModule, Flowers102DataModule
+from sam_pytorch.datasets import (CIFAR10DataModule, Food101DataModule,
+                                  Flowers102DataModule)
 from sam_pytorch.models import create_model
 from sam_pytorch.train_utils import load_config
 
@@ -10,10 +11,12 @@ from sam_pytorch.train_utils import load_config
 CONFIGS = {
     "flowers102": "configs/flowers102_efficientnet_b3_jft.yaml",
     "food101": "configs/food101_efficientnet_b0.yaml",
+    "cifar10": "configs/cifar10_efficientnet_b0.yaml",
 }
 DATA_MODULES = {
     "flowers102": Flowers102DataModule,
     "food101": Food101DataModule,
+    "cifar10": CIFAR10DataModule,
 }
 
 
@@ -34,20 +37,31 @@ def main() -> None:
         model_data = resolve_model_data_config(model)
     del model
 
-    datamodule = DATA_MODULES[args.dataset]
-    image = config.get("image", {})
-    kwargs = dict(
-        data_root=config["data_root"],
-        batch_size=config["training"]["batch_size"],
-        validation_fraction=config["split"]["validation_fraction"],
-        split_seed=config["split"]["seed"],
-        image_size=image.get("crop_size", 224),
-    )
-    if model_data is not None:
-        kwargs.update(image_mean=model_data["mean"], image_std=model_data["std"])
-    data = datamodule(**kwargs)
+    training = config["training"]
+    split = config.get("split", {})
+    if args.dataset == "cifar10":
+        data = CIFAR10DataModule(
+            data_root=config["data_root"],
+            batch_size=int(training["batch_size"]),
+            augmentation=config.get("augmentation", "none"),
+            validation_seed=int(split.get("seed", config["seed"])),
+            num_workers=int(training.get("num_workers", 0)),
+        )
+    else:
+        datamodule = DATA_MODULES[args.dataset]
+        image = config.get("image", {})
+        kwargs = dict(
+            data_root=config["data_root"],
+            batch_size=int(training["batch_size"]),
+            validation_fraction=float(split["validation_fraction"]),
+            split_seed=int(split["seed"]),
+            image_size=int(image.get("crop_size", 224)),
+        )
+        if model_data is not None:
+            kwargs.update(image_mean=model_data["mean"], image_std=model_data["std"])
+        data = datamodule(**kwargs)
     # These calls synchronously download/extract any missing data and create
-    # the uint8 tensor caches. Training processes can then read them safely.
+    # any uint8 tensor caches. Training processes can then read them safely.
     data.get_train_loader(seed=config["seed"])
     data.get_validation_loader()
     data.get_test_loader()
