@@ -35,7 +35,7 @@ Config: [`configs/cifar10_noisy_resnet32.yaml`](configs/cifar10_noisy_resnet32.y
 | Thông số | Chọn | Nằm ở đâu | Lý do |
 |---|---|---|---|
 | Tập dữ liệu | CIFAR-10 | §3.3: *"the classical noisy-label setting for CIFAR-10"* | Bài báo nói trực tiếp |
-| Tập train | **Đủ 50,000 ảnh**, không tách validation (`validation_fraction: 0`) | SAM C.1 (trang 16): 10% validation chỉ dùng để *"found ρ by gridsearch"*. repo: `use_test_set` mặc định `True`, tức `num_training_obs = 50000`. Jiang B.2: *"50,000 training and 10,000 validation images"* | ρ của §3.3 đã cố định nên không cần validation nữa. Code tác giả mặc định train 50k, còn 45k/5k là chế độ riêng để tìm ρ. Jiang cũng train 50k |
+| Tập train | **45,000 ảnh** (nhãn nhiễu) + **5,000 validation** (nhãn sạch), chia ngẫu nhiên theo seed cố định (`validation_fraction: 0.1`). Chỉ lật nhãn phần 45k | SAM C.1 (trang 16): *"computing the accuracy on a (non-noisy) validation set composed of a random subset of 10% of the usual CIFAR training samples"* | Đồng bộ với các thí nghiệm CIFAR khác của repo (đều giữ 10% validation). Validation sạch dùng để theo dõi mỗi epoch nên tập test không bao giờ bị nhìn trong lúc train. **Tự chọn:** bài không nói lần train cuối dùng 45k hay 50k (repo tác giả mặc định `use_test_set=True` train 50k, Jiang B.2 cũng 50k); train 45k ít hơn 10% dữ liệu nên accuracy có thể thấp hơn Table 4 một chút |
 | Tập test | 10,000 ảnh test chính thức, nhãn sạch | §3.3: *"the test set remains unmodified (i.e., clean)"* | Bài báo nói trực tiếp |
 | Kiểu nhiễu | Mỗi nhãn train, **độc lập**, đổi với xác suất p sang một trong 9 lớp **khác**, chọn đều | §3.3 chỉ ghi *"randomly flipped"*. Jiang §3 (trang 3): *"the label of each training example is independently changed to a random incorrect class with a probability p"* | §3.3 không định nghĩa rõ nhưng làm theo Jiang, và Jiang định nghĩa rõ |
 | Mức nhiễu p | 0.2, 0.4, 0.6, 0.8 | §3.3, Table 4: *"Noise rate (%) 20 40 60 80"* | Bài báo nói trực tiếp |
@@ -66,7 +66,7 @@ Config: [`configs/cifar10_noisy_resnet32.yaml`](configs/cifar10_noisy_resnet32.y
 | Lịch LR | Cosine, không warmup | SAM C.1 (trang 15–16, thực nghiệm ImageNet): *"The initial learning rate is set to 1.0 and decayed using a cosine schedule"*. SAM C.2 (fine-tuning): *"cosine learning rate decay"* | Bài báo không ghi lịch LR cho CIFAR. Cosine là lịch LR duy nhất bài báo dùng. Bài báo không nhắc warmup cho các lịch này nên không dùng |
 | Gradient clipping | **Không dùng** | Bài báo không nhắc | Không có trong bài báo nên không thêm |
 | Label smoothing | **Không dùng** | Bài báo không nhắc | Không có trong bài báo nên không thêm |
-| Model báo cáo | Epoch 200 (cuối), không chọn checkpoint | §3.3: *"for 200 epochs"*. Table 4: *"Test accuracy on the clean test set"* | Train đủ 200 epoch rồi đánh giá model đó, không thêm bước chọn checkpoint mà bài báo không mô tả. Cột "validation" theo epoch thực chất là tập test, chỉ để theo dõi |
+| Model báo cáo | Epoch 200 (cuối), không chọn checkpoint | §3.3: *"for 200 epochs"*. Table 4: *"Test accuracy on the clean test set"* | Train đủ 200 epoch rồi đánh giá model đó, không thêm bước chọn checkpoint mà bài báo không mô tả. `val_loss`/`val_error_rate` mỗi epoch đo trên 5k validation sạch, chỉ để theo dõi, không dùng để chọn gì. Tập test chỉ được đo **đúng một lần** trên model epoch cuối |
 | Seed | 1 (chạy thêm bằng `--seed 1 2 3 4 5`) | SAM §3.1: *"We run five independent replicas"* | Câu này ở §3.1. Table 4 không có ±, nên không chắc §3.3 chạy 5 lần. Nên chạy 5 seed nếu đủ tài nguyên |
 
 ## 5. SAM
@@ -88,7 +88,7 @@ Config: [`configs/cifar10_noisy_resnet32.yaml`](configs/cifar10_noisy_resnet32.y
 | Cặp trộn | Hoán vị ngẫu nhiên của chính batch | Mixup §2: *"mixup is applied to the same minibatch after random shuffling"*. `train.py`: `torch.randperm(batch_size)` | Như trên |
 | Nhãn trộn | One-hot trộn `λ·y_i + (1−λ)·y_j` | Mixup: *"where y_i, y_j are one-hot label encodings"* | Như trên. Cho kết quả giống `λ·CE(y_a) + (1−λ)·CE(y_b)` |
 | Khi nào trộn | Chỉ khi train. Đánh giá và dự đoán nhãn bootstrap thì dùng ảnh gốc | Mixup là kỹ thuật lúc train | Đánh giá phải trên dữ liệu thật |
-| Bootstrap | (1) train model gốc 200 epoch, (2) model đó dự đoán nhãn (lớp argmax) cho 50k ảnh train, (3) train lại từ đầu trên nhãn đó | §3.3: *"first trained as usual and then retrained from scratch on the labels predicted by the initially trained model"* | Ba bước khớp câu của bài báo. "Labels predicted" là lớp model dự đoán, tức argmax. Dự đoán dùng ảnh gốc, như khi đánh giá |
+| Bootstrap | (1) train model gốc 200 epoch, (2) model đó dự đoán nhãn (lớp argmax) cho 45k ảnh train, (3) train lại từ đầu trên nhãn đó | §3.3: *"first trained as usual and then retrained from scratch on the labels predicted by the initially trained model"* | Ba bước khớp câu của bài báo. "Labels predicted" là lớp model dự đoán, tức argmax. Dự đoán dùng ảnh gốc, như khi đánh giá |
 
 ## 7. Những điểm chưa có bằng chứng
 
