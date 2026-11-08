@@ -2,21 +2,31 @@
 
 import argparse
 
-from sam_pytorch.datasets import (CIFAR10DataModule, Food101DataModule,
-                                  Flowers102DataModule)
-from sam_pytorch.models import create_model
+from sam_pytorch.datasets import (CIFAR10DataModule, FGVCAircraftDataModule,
+                                  Food101DataModule, Flowers102DataModule,
+                                  OxfordIIITPetDataModule,
+                                  StanfordCarsDataModule)
+from sam_pytorch.models import create_model, uses_timm_pretrained_weights
 from sam_pytorch.train_utils import load_config
 
 
 CONFIGS = {
     "flowers102": "configs/flowers102_efficientnet_b3_jft.yaml",
+    "flowers102_b0": "configs/flowers102_efficientnet_b0.yaml",
     "food101": "configs/food101_efficientnet_b0.yaml",
     "cifar10": "configs/cifar10_efficientnet_b0.yaml",
+    "fgvc_aircraft": "configs/fgvc_aircraft_efficientnet_b0.yaml",
+    "oxford_iiit_pet": "configs/oxford_iiit_pet_efficientnet_b0.yaml",
+    "stanford_cars": "configs/stanford_cars_efficientnet_b0.yaml",
 }
 DATA_MODULES = {
     "flowers102": Flowers102DataModule,
+    "flowers102_b0": Flowers102DataModule,
     "food101": Food101DataModule,
     "cifar10": CIFAR10DataModule,
+    "fgvc_aircraft": FGVCAircraftDataModule,
+    "oxford_iiit_pet": OxfordIIITPetDataModule,
+    "stanford_cars": StanfordCarsDataModule,
 }
 
 
@@ -31,7 +41,8 @@ def main() -> None:
     model = create_model(config["model"], config["num_classes"],
                          config["pretrained_weights"])
     model_data = None
-    if config["model"].endswith("_jft"):
+    if uses_timm_pretrained_weights(
+            config["model"], config.get("pretrained_weights")):
         from timm.data import resolve_model_data_config
 
         model_data = resolve_model_data_config(model)

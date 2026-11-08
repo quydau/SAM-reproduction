@@ -7,14 +7,21 @@ from .wideresnet import WideResNet
 
 
 class EfficientNetB0(nn.Module):
-    """Torchvision EfficientNet-B0 with a dataset-specific classifier."""
+    """EfficientNet-B0 with torchvision or timm pretrained weights."""
 
     def __init__(self, num_classes, pretrained_weights="IMAGENET1K_V1"):
         super().__init__()
-        weights = None if pretrained_weights is None else EfficientNet_B0_Weights[pretrained_weights]
-        self.network = efficientnet_b0(weights=weights)
-        in_features = self.network.classifier[1].in_features
-        self.network.classifier[1] = nn.Linear(in_features, num_classes)
+        if pretrained_weights in (None, "IMAGENET1K_V1", "DEFAULT"):
+            weights = (None if pretrained_weights is None else
+                       EfficientNet_B0_Weights[pretrained_weights])
+            self.network = efficientnet_b0(weights=weights)
+            in_features = self.network.classifier[1].in_features
+            self.network.classifier[1] = nn.Linear(in_features, num_classes)
+        else:
+            import timm
+
+            self.network = timm.create_model(
+                pretrained_weights, pretrained=True, num_classes=num_classes)
 
     def forward(self, x):
         return self.network(x)
@@ -34,3 +41,13 @@ def create_model(model_name, num_classes, pretrained_weights="IMAGENET1K_V1"):
             model_name, pretrained=pretrained_weights is not None,
             num_classes=num_classes)
     raise ValueError(f"Unsupported model: {model_name}")
+
+
+def uses_timm_pretrained_weights(model_name, pretrained_weights):
+    """Whether preprocessing metadata should come from the timm model config."""
+    if pretrained_weights is None:
+        return False
+    if model_name.endswith("_jft"):
+        return True
+    return model_name == "efficientnet_b0" and pretrained_weights not in (
+        "IMAGENET1K_V1", "DEFAULT")

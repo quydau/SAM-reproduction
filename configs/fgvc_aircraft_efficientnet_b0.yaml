@@ -37,7 +37,7 @@ training:
 sam:
   rho: 0.05
 
-pretrained_weights: IMAGENET1K_V1 # RTX 3080-friendly B0 substitute; paper fine-tunes EffNet-B7/L2.
+pretrained_weights: efficientnet_b0.ra_in1k # Public timm ImageNet-1K RandAugment checkpoint.
 replace_classifier: true
 image:
   crop_size: 224

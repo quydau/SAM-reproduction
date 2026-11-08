@@ -9,14 +9,14 @@ SAM thực hiện cập nhật SGD trên loss tại các trọng số đã bị 
 Các nhóm thực nghiệm theo kế hoạch:
 
 - CIFAR-10 và CIFAR-100, WRN-16-8 huấn luyện từ đầu với `basic`, `cutout`, `autoaugment`.
-- Fine-tune EfficientNet-B0 trên Flowers102, Oxford-IIIT Pet, FGVC Aircraft và Stanford Cars.
+- Fine-tune EfficientNet-B0 với checkpoint ImageNet RandAugment `efficientnet_b0.ra_in1k` trên Flowers102, Oxford-IIIT Pet, FGVC Aircraft và Stanford Cars.
 - Fine-tune EfficientNet-B3 với weights `tf_efficientnet_b3.ns_jft_in1k` trên Flowers102, Stanford Cars và Oxford-IIIT Pet.
 - Fine-tune thêm EfficientNet-B0 trên CIFAR-100 với cùng recipe EfficientNet.
 - Fine-tune EfficientNet-B0 trên CIFAR-10 với cùng recipe và AutoAugment CIFAR.
 - Fine-tune EfficientNet-B0 trên Food101 với recipe Flowers102; dùng split train/test chính thức và giữ 10% train làm validation stratified. Ảnh 224×224 dạng uint8 được cache memory-mapped ở `data/food101-cache/` (khoảng 15 GB) để không giữ toàn bộ ảnh trong RAM.
 - Ba seed ghép cặp giữa SGD và SAM cho mỗi điều kiện; chọn checkpoint trên validation rồi đánh giá test một lần.
 
-Paper báo cáo năm lần chạy độc lập cho fine-tuning. Ba seed hiện dùng là giới hạn phạm vi đồ án; vì vậy độ bất định thống kê sẽ khác paper. Ngoài ra, paper fine-tune EfficientNet-B7 và EfficientNet-L2 với checkpoint công khai, trong khi cấu hình T4 ở đây dùng EfficientNet-B0 với weights ImageNet từ torchvision. Đây là tái lập có điều chỉnh về mô hình/phần cứng, không phải kết quả số học tương đương với thí nghiệm gốc.
+Paper báo cáo năm lần chạy độc lập cho fine-tuning. Ba seed hiện dùng là giới hạn phạm vi đồ án; vì vậy độ bất định thống kê sẽ khác paper. Ngoài ra, paper fine-tune EfficientNet-B7 và EfficientNet-L2 với checkpoint công khai, trong khi cấu hình T4 ở đây dùng EfficientNet-B0 với checkpoint ImageNet RandAugment của timm cho Flowers102, Oxford-IIIT Pet, FGVC Aircraft và Stanford Cars. Đây là tái lập có điều chỉnh về mô hình/phần cứng, không phải kết quả số học tương đương với thí nghiệm gốc.
 
 ## Hyperparameter và nguồn gốc
 
@@ -29,7 +29,7 @@ Paper báo cáo năm lần chạy độc lập cho fine-tuning. Ba seed hiện d
 | EfficientNet-B3 JFT trên Flowers102/Pet/Cars | `tf_efficientnet_b3.ns_jft_in1k`, ảnh 300×300, batch hiệu dụng 1024; config Flowers102 dùng microbatch 32 × tích lũy 32 trên T4, 5.000 bước; giữ LR, optimizer và SAM như recipe B0 | Weights Noisy Student được train trên ImageNet-1k và JFT-300M; kích thước ảnh và normalization lấy từ pretrained config của timm. |
 | Fine-tune đề xuất cho T4 | Batch hiệu dụng 256 (microbatch 16 × tích lũy 16), LR 0.004, 20,000 bước, WD 1e-5, `rho=0.05`, EfficientNet-B0 | Batch/LR/steps là suy luận để khớp xấp xỉ số mẫu đã thấy: LR scale tuyến tính từ C.2; 20k × 256 tương đương 5k × 1024. B0 là thay đổi để phù hợp bộ nhớ, không phải model trong paper |
 
-Các giá trị cho CIFAR được nêu trực tiếp trong paper. `rho=0.05` là lựa chọn có căn cứ: paper dùng giá trị này cho CIFAR-10 và cũng báo cáo kết quả fine-tuning với `rho=0.05`; kết quả fine-tuning tốt nhất có thể dùng rho đã tinh chỉnh riêng. Với Flowers/Pet, LR 0.004 và batch hiệu dụng 256 là ngoại suy theo tỷ lệ từ 0.016 @ 1024 và 0.008 @ 512. Paper không xác nhận trực tiếp giá trị 0.004. Weights ImageNet1K_V1 và kích thước đầu vào 224 là thay đổi để dùng EfficientNet-B0; cách crop/resize theo code SAM, không dùng transform dành riêng cho inference của torchvision.
+Các giá trị cho CIFAR được nêu trực tiếp trong paper. `rho=0.05` là lựa chọn có căn cứ: paper dùng giá trị này cho CIFAR-10 và cũng báo cáo kết quả fine-tuning với `rho=0.05`; kết quả fine-tuning tốt nhất có thể dùng rho đã tinh chỉnh riêng. Với Flowers/Pet, LR 0.004 và batch hiệu dụng 256 là ngoại suy theo tỷ lệ từ 0.016 @ 1024 và 0.008 @ 512. Paper không xác nhận trực tiếp giá trị 0.004. Bốn cấu hình B0 Flowers/Pet/Aircraft/Cars dùng weights `efficientnet_b0.ra_in1k` từ timm; các cấu hình B0 khác vẫn dùng `IMAGENET1K_V1` từ torchvision. Cả hai checkpoint B0 nhận ảnh 224×224 với ImageNet mean/std; cách crop/resize theo code SAM, không dùng transform inference mặc định của model zoo.
 
 Các cấu hình B3 giữ batch hiệu dụng và hyperparameter của recipe fine-tuning hiện tại. Config Flowers102 dùng microbatch 32 và tích lũy 32 bước cho hai GPU T4; nếu một GPU không đủ VRAM, giảm microbatch xuống 16 và tăng tích lũy lên 64. Ảnh train/validation được lưu dạng uint8 trên CPU; từng microbatch được chuẩn hóa trên CPU rồi chuyển lên GPU khi tính gradient. SAM tính gradient hai lượt bằng cách phát lại cùng microbatch và RNG, giữ phép cập nhật theo batch hiệu dụng. Data loader dùng center crop, bicubic resize và mean/std do `timm` khai báo cho checkpoint; ảnh train/validation/test không augmentation.
 
@@ -119,6 +119,100 @@ if [ "$SGD_STATUS" -ne 0 ] || [ "$SAM_STATUS" -ne 0 ]; then exit 1; fi
 
 Các biến `CUDA_VISIBLE_DEVICES` giả định Kaggle hiển thị hai GPU theo thứ tự 0 và 1; kiểm tra bằng `nvidia-smi -L` nếu cần. Mỗi tiến trình dùng một GPU và lưu output riêng. Nếu gặp CUDA out-of-memory, dừng cả hai, đổi `batch_size` thành 32 và `gradient_accumulation_steps` thành 32 trong YAML rồi chạy lại; batch hiệu dụng vẫn là 1024.
 
+### Chạy song song SGD và SAM trên 2 GPU T4 ở Kaggle (EfficientNet-B0 RandAugment)
+
+Các cấu hình Flowers102, Oxford-IIIT Pet, FGVC Aircraft và Stanford Cars khởi tạo từ checkpoint `efficientnet_b0.ra_in1k`. Trong Kaggle bật Internet nếu đây là lần tải đầu tiên. Mỗi lệnh `prepare_dataset` tải/cache dữ liệu và tải checkpoint trước khi chạy hai tiến trình; đợi prepare kết thúc rồi chạy khối tương ứng. GPU 0 chạy SGD, GPU 1 chạy SAM.
+
+#### FGVC Aircraft
+
+```bash
+python -m sam_pytorch.prepare_dataset --dataset fgvc_aircraft
+
+mkdir -p logs
+CUDA_VISIBLE_DEVICES=0 python -u -m sam_pytorch.finetune \
+  --config configs/fgvc_aircraft_efficientnet_b0.yaml \
+  --optimizer sgd --seed 1 > logs/aircraft_b0_sgd.log 2>&1 &
+SGD_PID=$!
+CUDA_VISIBLE_DEVICES=1 python -u -m sam_pytorch.finetune \
+  --config configs/fgvc_aircraft_efficientnet_b0.yaml \
+  --optimizer sam --seed 1 > logs/aircraft_b0_sam.log 2>&1 &
+SAM_PID=$!
+set +e
+wait "$SGD_PID"; SGD_STATUS=$?
+wait "$SAM_PID"; SAM_STATUS=$?
+echo "SGD exit=$SGD_STATUS; SAM exit=$SAM_STATUS"
+echo "Logs: logs/aircraft_b0_sgd.log, logs/aircraft_b0_sam.log"
+if [ "$SGD_STATUS" -ne 0 ] || [ "$SAM_STATUS" -ne 0 ]; then exit 1; fi
+```
+
+#### Flowers102
+
+```bash
+python -m sam_pytorch.prepare_dataset --dataset flowers102_b0
+
+mkdir -p logs
+CUDA_VISIBLE_DEVICES=0 python -u -m sam_pytorch.finetune \
+  --config configs/flowers102_efficientnet_b0.yaml \
+  --optimizer sgd --seed 1 > logs/flowers102_b0_sgd.log 2>&1 &
+SGD_PID=$!
+CUDA_VISIBLE_DEVICES=1 python -u -m sam_pytorch.finetune \
+  --config configs/flowers102_efficientnet_b0.yaml \
+  --optimizer sam --seed 1 > logs/flowers102_b0_sam.log 2>&1 &
+SAM_PID=$!
+set +e
+wait "$SGD_PID"; SGD_STATUS=$?
+wait "$SAM_PID"; SAM_STATUS=$?
+echo "SGD exit=$SGD_STATUS; SAM exit=$SAM_STATUS"
+echo "Logs: logs/flowers102_b0_sgd.log, logs/flowers102_b0_sam.log"
+if [ "$SGD_STATUS" -ne 0 ] || [ "$SAM_STATUS" -ne 0 ]; then exit 1; fi
+```
+
+#### Oxford-IIIT Pet
+
+```bash
+python -m sam_pytorch.prepare_dataset --dataset oxford_iiit_pet
+
+mkdir -p logs
+CUDA_VISIBLE_DEVICES=0 python -u -m sam_pytorch.finetune \
+  --config configs/oxford_iiit_pet_efficientnet_b0.yaml \
+  --optimizer sgd --seed 1 > logs/oxford_pet_b0_sgd.log 2>&1 &
+SGD_PID=$!
+CUDA_VISIBLE_DEVICES=1 python -u -m sam_pytorch.finetune \
+  --config configs/oxford_iiit_pet_efficientnet_b0.yaml \
+  --optimizer sam --seed 1 > logs/oxford_pet_b0_sam.log 2>&1 &
+SAM_PID=$!
+set +e
+wait "$SGD_PID"; SGD_STATUS=$?
+wait "$SAM_PID"; SAM_STATUS=$?
+echo "SGD exit=$SGD_STATUS; SAM exit=$SAM_STATUS"
+echo "Logs: logs/oxford_pet_b0_sgd.log, logs/oxford_pet_b0_sam.log"
+if [ "$SGD_STATUS" -ne 0 ] || [ "$SAM_STATUS" -ne 0 ]; then exit 1; fi
+```
+
+#### Stanford Cars
+
+```bash
+python -m sam_pytorch.prepare_dataset --dataset stanford_cars
+
+mkdir -p logs
+CUDA_VISIBLE_DEVICES=0 python -u -m sam_pytorch.finetune \
+  --config configs/stanford_cars_efficientnet_b0.yaml \
+  --optimizer sgd --seed 1 > logs/stanford_cars_b0_sgd.log 2>&1 &
+SGD_PID=$!
+CUDA_VISIBLE_DEVICES=1 python -u -m sam_pytorch.finetune \
+  --config configs/stanford_cars_efficientnet_b0.yaml \
+  --optimizer sam --seed 1 > logs/stanford_cars_b0_sam.log 2>&1 &
+SAM_PID=$!
+set +e
+wait "$SGD_PID"; SGD_STATUS=$?
+wait "$SAM_PID"; SAM_STATUS=$?
+echo "SGD exit=$SGD_STATUS; SAM exit=$SAM_STATUS"
+echo "Logs: logs/stanford_cars_b0_sgd.log, logs/stanford_cars_b0_sam.log"
+if [ "$SGD_STATUS" -ne 0 ] || [ "$SAM_STATUS" -ne 0 ]; then exit 1; fi
+```
+
+Mỗi tiến trình được gán một GPU T4, dùng microbatch và gradient accumulation như YAML, và ghi vào thư mục output riêng. Nếu gặp CUDA out-of-memory, giảm `training.batch_size` rồi tăng `training.gradient_accumulation_steps` tương ứng để giữ `effective_batch_size: 1024`. `flowers102` vẫn là lựa chọn prepare cho cấu hình B3 JFT; dùng `flowers102_b0` cho cấu hình B0 RandAugment.
+
 ### Chạy song song SGD và SAM trên 2 GPU T4 ở Kaggle (CIFAR10 EfficientNetB0)
 
 Bật Internet trong Kaggle nếu đây là lần tải đầu tiên. Lệnh prepare tải dữ liệu CIFAR10 và weights ImageNet của EfficientNetB0 trước khi chạy hai tiến trình, tránh tải đồng thời. Augmentation AutoAugment được áp dụng khi train; ảnh không cần tạo cache 224×224.
@@ -172,4 +266,5 @@ python -m pip install -r requirements.txt
 - Foret et al., [Sharpness-Aware Minimization for Efficiently Improving Generalization](https://arxiv.org/abs/2010.01412), ICLR 2021.
 - [Mã nguồn chính thức Google Research](https://github.com/google-research/sam) (JAX/Flax, TensorFlow Datasets).
 - [Weights EfficientNet-B0 của torchvision](https://docs.pytorch.org/vision/stable/models/efficientnet.html) dùng trong cấu hình fine-tune đã điều chỉnh.
+- [Checkpoint timm `efficientnet_b0.ra_in1k`](https://huggingface.co/timm/efficientnet_b0.ra_in1k), dùng cho fine-tune B0 trên Flowers102, Oxford-IIIT Pet, FGVC Aircraft và Stanford Cars.
 - [Mirror Stanford Cars trên Hugging Face](https://huggingface.co/datasets/mteb/StanfordCars), giữ hai split train/test chính thức; torchvision ghi nhận URL tải gốc của bộ dữ liệu hiện không còn hoạt động.

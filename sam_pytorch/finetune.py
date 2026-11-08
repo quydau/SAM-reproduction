@@ -14,7 +14,7 @@ from sam_pytorch.datasets import (FGVCAircraftDataModule,
                                   CIFAR10DataModule,
                                   CIFAR100DataModule,
                                   StanfordCarsDataModule)
-from sam_pytorch.models import create_model
+from sam_pytorch.models import create_model, uses_timm_pretrained_weights
 from sam_pytorch.train_utils import load_config, seed_everything, train
 
 
@@ -37,7 +37,8 @@ def run(config, optimizer, seed, args) -> None:
     seed_everything(int(config["seed"]))
     model = create_model(config["model"], int(config["num_classes"]),
                          config.get("pretrained_weights"))
-    if config["model"].endswith("_jft"):
+    if uses_timm_pretrained_weights(
+            config["model"], config.get("pretrained_weights")):
         from timm.data import resolve_model_data_config
 
         model_data = resolve_model_data_config(model)
