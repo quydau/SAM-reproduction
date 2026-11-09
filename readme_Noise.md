@@ -167,3 +167,19 @@ python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32_jiang.
 ```
 
 Không đổi `--num-micro-batches` giữa chừng một run: hai cách dùng chung thư mục output, nên khi resume từ `last.pt` sẽ trộn hai cách.
+
+## 10. Biến thể: train đủ 50k, không chia micro-batch (`configs/cifar10_noisy_resnet32_train50k.yaml`)
+
+Config này giống hệt `cifar10_noisy_resnet32.yaml` (ResNet-32 chuẩn), chỉ khác 3 chỗ dưới đây. Output ghi vào `outputs/train50k/cifar10_noisy/resnet32/`, tách riêng với các run 45k.
+
+| Thông số | Chọn | Nằm ở đâu | Lý do |
+|---|---|---|---|
+| Tập train | **50,000 ảnh** (toàn bộ train, nhãn nhiễu), không tách validation (`validation_fraction: 0.0`) | repo SAM: `use_test_set` mặc định `True`, tức train trên toàn bộ train set. Jiang B.2: *"Both datasets contain 50,000 training and 10,000 validation images"* (validation của Jiang chính là tập test 10k) | Bài báo không nói lần train cuối dùng 45k hay 50k. Code tác giả SAM và Jiang đều dùng đủ 50k |
+| Đánh giá mỗi epoch | Trên **tập test sạch 10k** (cột `val_*` trong log thật ra là test) | repo SAM với `use_test_set=True` cũng đánh giá trên test mỗi epoch | Chỉ để theo dõi, **không** dùng để chọn checkpoint hay chỉnh tham số |
+| Kết quả báo cáo | Accuracy trên test sạch của model ở **epoch 200 (cuối)**, ghi trong `results.txt`, mục `[test_metrics]` | §3.3: *"for 200 epochs"*; Table 4: *"Test accuracy on the clean test set"* | Giống mục 4. Không chọn epoch tốt nhất, vì bài báo không mô tả bước chọn đó |
+| Micro-batch | 1 (không chia), ε của SAM tính trên cả batch 256 | — | Người chạy chọn để chạy nhanh hơn. **Khác bài báo**: SAM §3.1 dùng m = 32 (8 GPU), footnote 5 ghi việc không đồng bộ ε giữa các GPU giúp SAM tốt hơn. Muốn giống bài báo thì thêm `--num-micro-batches 8` |
+
+```bash
+python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32_train50k.yaml \
+  --method sgd sam --noise-rate 0.8 --seed 1
+```

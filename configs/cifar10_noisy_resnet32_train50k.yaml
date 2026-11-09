@@ -1,0 +1,46 @@
+# SAM paper §3.3 "Robustness to label noise" (Table 4).
+# Nguồn và lý do chọn từng giá trị: readme_Noise.md (mục 10)
+# Giống cifar10_noisy_resnet32.yaml, nhưng train đủ 50k (không tách validation),
+# không chia micro-batch, output riêng ở outputs/train50k/.
+experiment: cifar10_noisy_resnet32_train50k
+dataset: cifar10
+data_root: data
+model: resnet32
+num_classes: 10
+augmentation: basic
+seed: 1
+
+label_noise:
+  rates: [0.2, 0.4, 0.6, 0.8]
+  noise_seed_offset: 1000
+
+split:
+  validation_fraction: 0.0
+  seed: 1
+
+training:
+  epochs: 200
+  batch_size: 256
+  gradient_accumulation_steps: 1
+  num_micro_batches: 1
+  effective_batch_size: 256
+  num_workers: 8
+  learning_rate: 0.1
+  weight_decay: 0.0005
+  scheduler: cosine
+  momentum: 0.9
+  nesterov: false
+  label_smoothing: 0.0
+  gradient_clip_norm: 0.0
+
+sam:
+  rho_by_noise_rate:
+    0.2: 0.1
+    0.4: 0.1
+    0.6: 0.1
+    0.8: 0.05
+
+mixup:
+  alphas: [1, 8, 16, 32]
+
+output_root: outputs/train50k
