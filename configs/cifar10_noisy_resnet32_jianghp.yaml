@@ -1,0 +1,48 @@
+# SAM paper §3.3: "train a simple model of similar size (ResNet-32) for 200 epochs, following Jiang et al. (2019)".
+# ResNet-32 chuẩn (resnet32), nhưng hyperparameter theo code MentorMix của Jiang:
+#   batch 128, lr 0.1, momentum 0.9, weight decay 2e-4 (resnet_model.py: l2_loss * 0.0002).
+# Khác Jiang: epochs = 200 theo bài SAM (code Jiang: 200K bước ~ 512 epoch);
+#   scheduler giữ cosine (Jiang: x0.9 mỗi 30 epoch dạng bậc thang, repo chưa hỗ trợ).
+# Train 50k, không validation, không chia micro-batch, output riêng ở outputs/jianghp/.
+experiment: cifar10_noisy_resnet32_jianghp
+dataset: cifar10
+data_root: data
+model: resnet32
+num_classes: 10
+augmentation: basic
+seed: 1
+
+label_noise:
+  rates: [0.2, 0.4, 0.6, 0.8]
+  noise_seed_offset: 1000
+
+split:
+  validation_fraction: 0.0
+  seed: 1
+
+training:
+  epochs: 200
+  batch_size: 128
+  gradient_accumulation_steps: 1
+  num_micro_batches: 1
+  effective_batch_size: 128
+  num_workers: 8
+  learning_rate: 0.1
+  weight_decay: 0.0002
+  scheduler: cosine
+  momentum: 0.9
+  nesterov: false
+  label_smoothing: 0.0
+  gradient_clip_norm: 0.0
+
+sam:
+  rho_by_noise_rate:
+    0.2: 0.1
+    0.4: 0.1
+    0.6: 0.1
+    0.8: 0.05
+
+mixup:
+  alphas: [1, 8, 16, 32]
+
+output_root: outputs/jianghp
