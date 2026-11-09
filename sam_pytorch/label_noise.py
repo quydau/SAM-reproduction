@@ -35,6 +35,7 @@ import torch
 from sam_pytorch.datasets import CIFAR10DataModuleForNoise
 from sam_pytorch.models import create_model
 from sam_pytorch.noise_train_step import use_micro_batch_train_step
+from sam_pytorch.resnet_jiang import ResNet32Jiang
 from sam_pytorch.train_utils import load_config, seed_everything, train
 
 # Thứ tự các hàng trong bảng tổng kết, giống Table 4.
@@ -143,6 +144,10 @@ def _run_config(base_config: dict, noise_rate: float, method: str, seed: int,
     config.setdefault("mixup", {})["alpha"] = (
         mixup_alpha if method in MIXUP_METHODS else None)
 
+    # Ghi đè số micro-batch: 8 = như 8 GPU của bài báo, 1 = không chia batch.
+    if args.num_micro_batches is not None:
+        config["training"]["num_micro_batches"] = args.num_micro_batches
+
     # Ghi đè số epoch / số bước khi chạy thử nhanh.
     if args.epochs is not None:
         config["training"]["epochs"] = args.epochs
@@ -151,6 +156,15 @@ def _run_config(base_config: dict, noise_rate: float, method: str, seed: int,
         config["training"]["max_steps"] = args.steps
         config["training"]["epochs"] = None
     return config
+
+
+def _create_model(config: dict):
+    """``resnet32_jiang`` (resnet_jiang.py) chỉ dùng cho thực nghiệm nhiễu;
+    model khác lấy từ models.py chung."""
+    num_classes = int(config["num_classes"])
+    if config["model"] == "resnet32_jiang":
+        return ResNet32Jiang(num_classes=num_classes)
+    return create_model(config["model"], num_classes)
 
 
 def _optimizer_name(method: str) -> str:
@@ -181,7 +195,7 @@ def _train_on_noisy(base_config: dict, noise_rate: float, method: str, seed: int
     config["label_noise"]["num_train_labels"] = len(data.train_labels)
 
     seed_everything(seed)
-    model = create_model(config["model"], int(config["num_classes"]))
+    model = _create_model(config)
     _train_model(model, data, config, method, run_dir)
     return run_dir
 
@@ -202,7 +216,7 @@ def _load_finished_model(config: dict, checkpoint_path: Path):
     """Nạp model ở epoch cuối của một run đã xong (EMA nếu có)."""
     device = torch.device("cuda" if torch.cuda.is_available() else
                           "mps" if torch.backends.mps.is_available() else "cpu")
-    model = create_model(config["model"], int(config["num_classes"])).to(device)
+    model = _create_model(config).to(device)
     state = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(state["ema"] or state["model"])
     return model
@@ -271,7 +285,7 @@ def _bootstrap(base_config: dict, noise_rate: float, method: str, seed: int,
     config["bootstrap_source"] = str(source_checkpoint)
 
     seed_everything(seed)
-    model = create_model(config["model"], int(config["num_classes"]))
+    model = _create_model(config)
     _train_model(model, data, config, method, run_dir)
     return run_dir
 
@@ -378,6 +392,9 @@ def main() -> None:
                         help="Mixup alphas for mixup methods (default: mixup.alphas)")
     parser.add_argument("--summarize", action="store_true",
                         help="Only build the Table-4 style summary from finished runs")
+    parser.add_argument("--num-micro-batches", type=int,
+                        help="Chia mỗi batch thành N micro-batch: 8 = như 8 GPU của bài báo "
+                             "(256 = 8 x 32), 1 = không chia (default: training.num_micro_batches)")
     limits = parser.add_mutually_exclusive_group()
     limits.add_argument("--epochs", type=int, help="Override training.epochs (quick run)")
     limits.add_argument("--steps", type=int, help="Override training.max_steps (quick run)")

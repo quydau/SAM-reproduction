@@ -100,7 +100,7 @@ Các điểm sau bắt buộc phải có một giá trị, nhưng bài báo khô
 | Hệ số 0.5 của L2 | `0.5·wd·‖w‖²` | Công thức (1) viết `λ‖w‖²`, không có 0.5. Repo dùng 0.5 vì số WD của Table 6 được tạo ra bởi code dùng 0.5. Nếu đọc đúng chữ công thức (1) thì L2 mạnh gấp đôi |
 | §3.3 chạy trên 8 GPU | 8 micro-batch × 32 | Câu về 8 GPU nằm ở §3.1. §3.3 không nhắc phần cứng |
 | α khi Bootstrap + Mixup | Cùng α ở hai giai đoạn | Bài báo chỉ ghi "bootstrapped variants of SGD with Mixup" và "tried all values of α" |
-| Kích thước ResNet-32 | ResNet-32 chuẩn của He et al. 2016 (16/32/64 kênh, 0.46M tham số, shortcut option A) | Bài báo chỉ ghi "a simple model of similar size (ResNet-32)". Jiang B.2 (trang 16) ghi *"training ResNet-32 on the clean training dataset, the validation accuracy reaches 95.2% on CIFAR-10"*. Con số này cao hơn nhiều so với mức thường thấy của ResNet-32 chuẩn trên CIFAR-10 sạch (khoảng 92–93%). Vì vậy có thể ResNet-32 của Jiang (và của SAM) **rộng hơn** bản chuẩn. Chưa xác minh được kiến trúc chính xác |
+| Kích thước ResNet-32 | ResNet-32 chuẩn của He et al. 2016 (16/32/64 kênh, 0.46M tham số, shortcut option A) | Bài báo chỉ ghi "a simple model of similar size (ResNet-32)". Jiang B.2 (trang 16) ghi *"training ResNet-32 on the clean training dataset, the validation accuracy reaches 95.2% on CIFAR-10"*. Con số này cao hơn nhiều so với mức thường thấy của ResNet-32 chuẩn trên CIFAR-10 sạch (khoảng 92–93%). Code của Jiang xác nhận model **rộng hơn** (xem mục 9). Model của SAM §3.3 thì vẫn chưa biết chắc |
 
 ## 8. Cách chạy
 
@@ -129,3 +129,41 @@ python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32.yaml -
 | File trong mỗi run | `results.txt` (accuracy test ở epoch cuối), `metrics.csv`, `train.log`, `config.yaml` (giá trị thật đã dùng, kể cả ρ và α) |
 | Bootstrap | Có thêm `bootstrap_labels.pt` và `bootstrap_stats.txt`. Nếu train lại run gốc thì phải xóa `bootstrap_labels.pt` để nhãn được dự đoán lại |
 | Số run | Mỗi mức nhiễu và mỗi seed: 3 run (SGD, SAM, Bootstrap + SAM) + 4 run Mixup + 4 run Bootstrap + Mixup, mỗi run 200 epoch |
+
+## 9. Biến thể: ResNet-32 của Jiang (`configs/cifar10_noisy_resnet32_jiang.yaml`)
+
+Config này giống hệt `cifar10_noisy_resnet32.yaml`, chỉ khác `model: resnet32_jiang` (`sam_pytorch/resnet_jiang.py`) và mặc định `num_micro_batches: 1`. Output nằm ở `outputs/cifar10_noisy/resnet32_jiang/`, tách riêng với các run ResNet-32 chuẩn.
+
+| Thông số | Chọn | Nằm ở đâu | Lý do |
+|---|---|---|---|
+| Kiến trúc | init conv 3→64; 3 stage × 5 block, 128 / 256 / 512 kênh; block pre-activation; BN → leaky ReLU → avg-pool → fc ở cuối. **29,442,378 tham số** | Jiang, code `google-research/mentormix/code/resnet_model.py` (`build_model`, `filters = [64, 128, 256, 512]` khi `use_bottleneck=False`); `cifar_train_mentormix.py`: `num_residual_units=5`, `use_bottleneck=False` | SAM §3.3 làm theo Jiang và ghi *"a simple model of similar size (ResNet-32)"*. Đây là ResNet-32 mà Jiang thật sự dùng, hợp với con số 95.2% trên CIFAR-10 sạch (B.2) |
+| Leaky ReLU | 0.1 | `cifar_train_mentormix.py`: `relu_leakiness=0.1` | Đúng code gốc |
+| Thứ tự ở block đầu stage 1 | LeakyReLU rồi mới BN, skip lấy sau kích hoạt | `_residual(..., activate_before_residual=True)` | Đúng code gốc (các block khác là BN → LeakyReLU, skip lấy trước kích hoạt) |
+| Skip connection khi đổi kênh | avg-pool (kernel = stride) rồi pad kênh bằng 0 hai bên | `_residual`: `tf.nn.avg_pool(orig_x, stride, stride, 'VALID')` + `tf.pad` | Đúng code gốc |
+| BatchNorm | eps 1e-3, momentum 0.9 (TF), tức `momentum=0.1` trong PyTorch | `_batch_norm`: `assign_moving_average(..., 0.9)`, `batch_normalization(..., 0.001)` | Đúng code gốc |
+| Khởi tạo | conv: normal(0, √(2/(k²·out))), tức Kaiming normal fan_out; fc: U(±√(3/512)), bias 0 | `_conv`, `_fully_connected` (`uniform_unit_scaling_initializer(factor=1.0)`) | Đúng code gốc |
+| Weight decay, LR, lịch LR, batch | **Giữ như config chuẩn** (5e-4, 0.1 cosine, 256) | Mục 4 | Chỉ đổi model để so sánh được với run ResNet-32 chuẩn. Jiang dùng wd 2e-4 chỉ trên weight (`decay()`), batch 128, LR ×0.9 theo bậc. Đó là setup của Jiang, không phải của SAM |
+| Micro-batch | Mặc định 1 (không chia). Muốn chia 8 × 32 như mục 5 thì thêm `--num-micro-batches 8` | `--num-micro-batches` trong `label_noise.py` | Model nặng ~63 lần ResNet-32 chuẩn. Chia 8 micro-batch nhỏ làm GPU chạy kém hiệu quả. **Lưu ý:** với 1, ε của SAM tính trên cả batch 256, khác với m = 32 của bài báo (§3.1, footnote 5) |
+
+**Vì sao chắc đây là model Jiang dùng cho CIFAR:**
+
+| Bằng chứng | Nằm ở đâu |
+|---|---|
+| ResNet-32 chỉ dùng cho CIFAR, các dataset khác dùng Inception-ResNet-v2 | Jiang §5 (trang 6): *"we train networks from scratch using ResNet-32 for CIFAR and Inception-ResNet-v2 for WebVision"* |
+| Code MentorMix chỉ có CIFAR-10/100 và một backbone duy nhất `resnet32` | `cifar_train_mentormix.py` (`--studentnet` chỉ nhận `resnet32`), `training_mentormix_command.sh` |
+| Jiang cố ý làm rộng model | `resnet_model.py` của Jiang được sửa từ `tensorflow/models` (v1.13.0, `research/resnet/resnet_model.py`). Bản gốc có `init_conv` 16 kênh và `filters = [16, 16, 32, 64]` (ResNet-32 chuẩn). Jiang đổi thành 64 và `[64, 128, 256, 512]`, đồng thời đảo thứ tự BN/ReLU ở block đầu |
+| Model "cùng cỡ" với các bài trước | Jiang §5.1.2: *"all methods are trained using networks of similar capacity (ours is ResNet-32)"*; SAM §3.3: *"a simple model of similar size (ResNet-32) … following Jiang et al. (2019)"* |
+| Hợp với accuracy trên CIFAR-10 sạch | Jiang B.2: 95.2% |
+
+**Khác biệt nhỏ còn lại:** conv stride 2 trong TF (`padding='SAME'`) pad lệch (0 trên/trái, 1 dưới/phải), còn PyTorch `padding=1` pad đều hai bên. Ảnh chỉ lệch 1 pixel, không ảnh hưởng số tham số hay kiến trúc.
+
+**Chưa xác định được:** dữ liệu nhiễu của Jiang được tải về sẵn (`cifar.zip`), nên code không cho biết cách lật nhãn. Code công khai (TF1, 1 GPU) cũng có thể không giống hệt bản họ chạy trên 8 V100.
+
+```bash
+python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32_jiang.yaml \
+  --method sam --noise-rate 0.8 --seed 1                        # không chia batch
+python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32_jiang.yaml \
+  --method sam --noise-rate 0.8 --seed 1 --num-micro-batches 8  # 8 x 32 như bài báo
+```
+
+Không đổi `--num-micro-batches` giữa chừng một run: hai cách dùng chung thư mục output, nên khi resume từ `last.pt` sẽ trộn hai cách.
