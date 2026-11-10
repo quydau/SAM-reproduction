@@ -1,0 +1,45 @@
+# Thử nghiệm thăm dò (KHÔNG có căn cứ trực tiếp từ bài báo): giống cifar10_noisy_resnet32_train50k.yaml
+# (batch 256, weight decay 5e-4) nhưng m = 8 ảnh mỗi "GPU" -> chia batch 256 thành 32 micro-batch.
+# Bài SAM chỉ nói chia batch cho 8 GPU (§3.1), không nêu m cho thí nghiệm nhiễu.
+experiment: cifar10_noisy_resnet32_m8
+dataset: cifar10
+data_root: data
+model: resnet32
+num_classes: 10
+augmentation: basic
+seed: 1
+
+label_noise:
+  rates: [0.2, 0.4, 0.6, 0.8]
+  noise_seed_offset: 1000
+
+split:
+  validation_fraction: 0.0
+  seed: 1
+
+training:
+  epochs: 200
+  batch_size: 256
+  gradient_accumulation_steps: 1
+  num_micro_batches: 32
+  effective_batch_size: 256
+  num_workers: 8
+  learning_rate: 0.1
+  weight_decay: 0.0005
+  scheduler: cosine
+  momentum: 0.9
+  nesterov: false
+  label_smoothing: 0.0
+  gradient_clip_norm: 0.0
+
+sam:
+  rho_by_noise_rate:
+    0.2: 0.1
+    0.4: 0.1
+    0.6: 0.1
+    0.8: 0.05
+
+mixup:
+  alphas: [1, 8, 16, 32]
+
+output_root: outputs/m8
