@@ -1,0 +1,44 @@
+# Thử nghiệm thăm dò: giống cifar10_noisy_resnet32_bs128.yaml (batch 128 theo Jiang, 50k, không chia micro-batch)
+# nhưng weight decay 2e-4 (theo code Jiang) thay vì 5e-4. Lệch khỏi SAM C.1 (batch 256) và Bảng 6 (wd >= 5e-4).
+experiment: cifar10_noisy_resnet32_bs128_wd2e4
+dataset: cifar10
+data_root: data
+model: resnet32
+num_classes: 10
+augmentation: basic
+seed: 1
+
+label_noise:
+  rates: [0.2, 0.4, 0.6, 0.8]
+  noise_seed_offset: 1000
+
+split:
+  validation_fraction: 0.0
+  seed: 1
+
+training:
+  epochs: 200
+  batch_size: 128
+  gradient_accumulation_steps: 1
+  num_micro_batches: 1
+  effective_batch_size: 128
+  num_workers: 8
+  learning_rate: 0.1
+  weight_decay: 0.0002
+  scheduler: cosine
+  momentum: 0.9
+  nesterov: false
+  label_smoothing: 0.0
+  gradient_clip_norm: 0.0
+
+sam:
+  rho_by_noise_rate:
+    0.2: 0.1
+    0.4: 0.1
+    0.6: 0.1
+    0.8: 0.05
+
+mixup:
+  alphas: [1, 8, 16, 32]
+
+output_root: outputs/bs128_wd2e4
