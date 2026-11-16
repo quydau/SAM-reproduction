@@ -30,9 +30,9 @@ training:
   weight_decay: 0.0005
   scheduler: cosine
   momentum: 0.9
-  nesterov: false
+  nesterov: true
   label_smoothing: 0.0
-  gradient_clip_norm: 0.0
+  gradient_clip_norm: 5.0
 
 sam:
   rho_by_noise_rate:
