@@ -1,82 +1,53 @@
-"""Download/cache a fine-tuning dataset and its pretrained model weights."""
+"""Download/cache one supported fine-tuning dataset and EfficientNet-B0 weights."""
 
 import argparse
 
-from sam_pytorch.datasets import (CIFAR10DataModule, FGVCAircraftDataModule,
-                                  Food101DataModule, Flowers102DataModule,
+from sam_pytorch.datasets import (FGVCAircraftDataModule,
+                                  Flowers102DataModule,
                                   OxfordIIITPetDataModule,
                                   StanfordCarsDataModule)
-from sam_pytorch.models import create_model, uses_timm_pretrained_weights
+from sam_pytorch.models import create_model
 from sam_pytorch.train_utils import load_config
 
 
 CONFIGS = {
-    "flowers102": "configs/flowers102_efficientnet_b3_jft.yaml",
-    "flowers102_b0": "configs/flowers102_efficientnet_b0.yaml",
-    "food101": "configs/food101_efficientnet_b0.yaml",
-    "cifar10": "configs/cifar10_efficientnet_b0.yaml",
-    "fgvc_aircraft": "configs/fgvc_aircraft_efficientnet_b0.yaml",
-    "oxford_iiit_pet": "configs/oxford_iiit_pet_efficientnet_b0.yaml",
-    "stanford_cars": "configs/stanford_cars_efficientnet_b0.yaml",
-}
-DATA_MODULES = {
-    "flowers102": Flowers102DataModule,
-    "flowers102_b0": Flowers102DataModule,
-    "food101": Food101DataModule,
-    "cifar10": CIFAR10DataModule,
-    "fgvc_aircraft": FGVCAircraftDataModule,
-    "oxford_iiit_pet": OxfordIIITPetDataModule,
-    "stanford_cars": StanfordCarsDataModule,
+    "fgvc_aircraft": ("configs/fgvc_aircraft_efficientnet_b0.yaml",
+                      FGVCAircraftDataModule),
+    "flowers102": ("configs/flowers102_efficientnet_b0.yaml",
+                   Flowers102DataModule),
+    "oxford_iiit_pet": ("configs/oxford_iiit_pet_efficientnet_b0.yaml",
+                        OxfordIIITPetDataModule),
+    "stanford_cars": ("configs/stanford_cars_efficientnet_b0.yaml",
+                      StanfordCarsDataModule),
 }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", choices=tuple(CONFIGS), default="flowers102",
-                        help="Dataset to prepare (default: flowers102)")
+    parser.add_argument("--dataset", choices=tuple(CONFIGS), required=True)
     args = parser.parse_args()
-    config = load_config(CONFIGS[args.dataset])
+    config_path, data_module = CONFIGS[args.dataset]
+    config = load_config(config_path)
 
-    # Populate the model-weight cache before two training processes start.
+    # Download/cache the pretrained weights before starting training processes.
     model = create_model(config["model"], config["num_classes"],
-                         config["pretrained_weights"])
-    model_data = None
-    if uses_timm_pretrained_weights(
-            config["model"], config.get("pretrained_weights")):
-        from timm.data import resolve_model_data_config
-
-        model_data = resolve_model_data_config(model)
+                         config.get("pretrained_weights"))
     del model
 
     training = config["training"]
     split = config.get("split", {})
-    if args.dataset == "cifar10":
-        data = CIFAR10DataModule(
-            data_root=config["data_root"],
-            batch_size=int(training["batch_size"]),
-            augmentation=config.get("augmentation", "none"),
-            validation_seed=int(split.get("seed", config["seed"])),
-            num_workers=int(training.get("num_workers", 0)),
-        )
-    else:
-        datamodule = DATA_MODULES[args.dataset]
-        image = config.get("image", {})
-        kwargs = dict(
-            data_root=config["data_root"],
-            batch_size=int(training["batch_size"]),
-            validation_fraction=float(split["validation_fraction"]),
-            split_seed=int(split["seed"]),
-            image_size=int(image.get("crop_size", 224)),
-        )
-        if model_data is not None:
-            kwargs.update(image_mean=model_data["mean"], image_std=model_data["std"])
-        data = datamodule(**kwargs)
-    # These calls synchronously download/extract any missing data and create
-    # any uint8 tensor caches. Training processes can then read them safely.
-    data.get_train_loader(seed=config["seed"])
+    data = data_module(
+        data_root=config["data_root"],
+        batch_size=int(training["batch_size"]),
+        validation_fraction=float(split.get("validation_fraction", 0.1)),
+        split_seed=int(split.get("seed", config["seed"])),
+        num_workers=int(training.get("num_workers", 0)),
+        image_size=int(config.get("image", {}).get("crop_size", 224)),
+    )
+    data.get_train_loader(seed=int(config["seed"]))
     data.get_validation_loader()
     data.get_test_loader()
-    print(f"{args.dataset} and its pretrained model weights are ready.", flush=True)
+    print(f"{args.dataset} data and EfficientNet-B0 weights are ready.", flush=True)
 
 
 if __name__ == "__main__":

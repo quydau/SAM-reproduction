@@ -110,17 +110,6 @@ class SAM(Optimizer):
             self.zero_grad()
 
     @torch.no_grad()
-    def restore_weights(self, zero_grad: bool = False) -> None:
-        """Undo ``first_step`` without updating (e.g. to skip a bad step)."""
-        for group in self.param_groups:
-            for parameter in group["params"]:
-                if parameter.grad is None:
-                    continue
-                parameter.data = self.state[parameter]["old_p"]
-        if zero_grad:
-            self.zero_grad()
-
-    @torch.no_grad()
     def add_l2_gradient(self) -> None:
         for group in self.param_groups:
             coefficient = group["l2_reg"]
@@ -165,39 +154,6 @@ class SAM(Optimizer):
     def load_state_dict(self, state_dict) -> None:
         super().load_state_dict(state_dict)
         self.base_optimizer.param_groups = self.param_groups
-
-
-class RMSProp(Optimizer):
-    """TF-style RMSProp with momentum (efficientnet_optim.RMSProp analogue).
-
-    ``v = beta2*v + (1-beta2)*g^2`` (initialised to ones), then
-    ``m = beta*m + lr*g/sqrt(v+eps)`` and ``w -= m``. Reconstructed from the
-    TensorFlow convention; verify against ``efficientnet/optim.py``.
-    """
-
-    def __init__(self, params, lr=0.1, beta=0.9, beta2=0.9, eps=0.001):
-        super().__init__(params, dict(lr=lr, beta=beta, beta2=beta2, eps=eps))
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        loss = None
-        if closure is not None:
-            with torch.enable_grad():
-                loss = closure()
-        for group in self.param_groups:
-            for p in group["params"]:
-                if p.grad is None:
-                    continue
-                state = self.state[p]
-                if not state:
-                    state["v"] = torch.ones_like(p)
-                    state["momentum"] = torch.zeros_like(p)
-                state["v"].mul_(group["beta2"]).addcmul_(
-                    p.grad, p.grad, value=1 - group["beta2"])
-                state["momentum"].mul_(group["beta"]).add_(
-                    group["lr"] * p.grad / (state["v"] + group["eps"]).sqrt())
-                p.sub_(state["momentum"])
-        return loss
 
 
 class ExponentialMovingAverage:

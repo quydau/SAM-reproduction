@@ -3,7 +3,6 @@ dataset: flowers102
 data_root: data
 model: efficientnet_b0
 num_classes: 102
-optimizers: [sgd, sam]
 seed: 1
 
 split:
@@ -20,9 +19,6 @@ training:
   effective_batch_size: 1024
   epochs: null
   max_steps: 5000 # Paper's C.2: 5k steps at batch 1024.
-  mixed_precision: fp16 # CUDA fp16 autocast + dynamic loss scaling (bf16 also works on Ampere). Set false for fp32.
-  channels_last: true # Faster convolutions on tensor cores.
-  cudnn_benchmark: true # Autotune conv kernels (fixed input shapes).
   learning_rate: 0.016 # Paper C.2 value for batch 1024.
   scheduler: cosine
   weight_decay: 0.00001
@@ -32,23 +28,12 @@ training:
   gradient_clip_norm: 1.0 # Matches --gradient_clipping 1.0 in that command.
   freeze_batch_norm_statistics: true
   evaluate_every: 10 # Validate sparsely; the last epoch is always evaluated.
-  checkpoint_every: 50 # Resume checkpoint (last.pt) interval; the last epoch is always saved.
 
 sam:
   rho: 0.05
 
 pretrained_weights: efficientnet_b0.ra_in1k # Public timm ImageNet-1K RandAugment checkpoint.
-replace_classifier: true
 image:
   crop_size: 224
-  eval_center_crop_fraction: 0.875
-  interpolation: bicubic
-  normalization: imagenet
-  train_preprocessing: sam_center_crop_then_resize_no_augmentation
-  eval_preprocessing: sam_center_crop_then_resize
-
-# C.2 reports no augmentation; train/validation/test share deterministic
-# center-crop, bicubic resize, and ImageNet normalization preprocessing.
-# Only B0 weights/resolution are adaptations; batch, LR, and steps follow C.2.
 
 output_root: outputs

@@ -3,7 +3,6 @@ dataset: stanford_cars
 data_root: data
 model: efficientnet_b0
 num_classes: 196
-optimizers: [sgd, sam]
 seed: 1
 
 split:
@@ -17,9 +16,6 @@ training:
   effective_batch_size: 1024
   epochs: null
   max_steps: 5000
-  mixed_precision: fp16
-  channels_last: true
-  cudnn_benchmark: true
   learning_rate: 0.016
   scheduler: cosine
   weight_decay: 0.00001
@@ -29,22 +25,12 @@ training:
   gradient_clip_norm: 1.0
   freeze_batch_norm_statistics: true
   evaluate_every: 10
-  checkpoint_every: 50
 
 sam:
   rho: 0.05
 
 pretrained_weights: efficientnet_b0.ra_in1k # Public timm ImageNet-1K RandAugment checkpoint.
-replace_classifier: true
 image:
   crop_size: 224
-  eval_center_crop_fraction: 0.875
-  interpolation: bicubic
-  normalization: imagenet
-  train_preprocessing: sam_center_crop_then_resize_no_augmentation
-  eval_preprocessing: sam_center_crop_then_resize
-
-# Deterministic center-crop, bicubic resize, and ImageNet normalization are
-# shared by train, validation, and test, without random augmentation.
 
 output_root: outputs

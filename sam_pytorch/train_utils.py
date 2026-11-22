@@ -8,7 +8,6 @@ delegated to :class:`sam_pytorch.optimizers.SAM`.
 
 from __future__ import annotations
 
-import contextlib
 import copy
 import csv
 import logging
@@ -26,10 +25,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torchvision
-from sklearn.metrics import classification_report, f1_score
+from sklearn.metrics import classification_report
 from torch import nn
 
-from sam_pytorch.optimizers import SAM, ExponentialMovingAverage, RMSProp
+from sam_pytorch.optimizers import SAM, ExponentialMovingAverage
 
 
 def load_config(path: str | Path) -> dict:
@@ -178,60 +177,9 @@ def _move_batch_to_model_device(model, images, labels, mask):
     """Move this single-process batch onto the model's device (GPU or CPU)."""
     device = next(model.parameters()).device
     images = images.to(device, non_blocking=True)
-    if getattr(model, "channels_last", False) and images.ndim == 4:
-        images = images.contiguous(memory_format=torch.channels_last)
     labels = labels.to(device, non_blocking=True)
     mask = mask.to(device, non_blocking=True) if mask is not None else None
     return images, labels, mask
-
-
-def _autocast(model):
-    """fp16 autocast context when ``train`` enabled mixed precision on CUDA."""
-    if getattr(model, "amp_fp16", False):
-        return torch.autocast("cuda", dtype=torch.float16)
-    return contextlib.nullcontext()
-
-
-class _LossScaler:
-    """Dynamic fp16 loss scale for the manual two-pass (SAM) training step.
-
-    ``torch.amp.GradScaler`` cannot unscale twice per update, which SAM
-    needs (once before the perturbation, once before the real step), so the
-    scale is managed here. Growth that overshoots costs one skipped update.
-    """
-
-    def __init__(self, scale: float = 2.0 ** 13, growth_interval: int = 1000,
-                 max_scale: float = 2.0 ** 20):
-        self.scale, self.growth_interval, self.max_scale = scale, growth_interval, max_scale
-        self._good_steps = 0
-
-    def update(self, found_inf: bool) -> None:
-        if found_inf:
-            self.scale = max(self.scale * 0.5, 1.0)
-            self._good_steps = 0
-            logging.warning("Skipped update: non-finite gradients; loss scale -> %g",
-                            self.scale)
-        else:
-            self._good_steps += 1
-            if self._good_steps >= self.growth_interval:
-                self.scale = min(self.scale * 2.0, self.max_scale)
-                self._good_steps = 0
-
-    def state_dict(self) -> dict:
-        return {"scale": self.scale, "good_steps": self._good_steps}
-
-    def load_state_dict(self, state: dict) -> None:
-        self.scale, self._good_steps = state["scale"], state["good_steps"]
-
-
-@torch.no_grad()
-def _unscale_gradients(model, scale: float) -> bool:
-    """Divide gradients by ``scale``; return whether they are all finite."""
-    grads = [p.grad for p in model.parameters() if p.grad is not None]
-    if not grads:
-        return True
-    torch._foreach_mul_(grads, 1.0 / scale)
-    return bool(torch.isfinite(torch.stack(torch._foreach_norm(grads))).all())
 
 
 def _classification_loss(logits, labels, mask, label_smoothing):
@@ -244,9 +192,7 @@ def _classification_loss(logits, labels, mask, label_smoothing):
 
 def _loss(model, images, labels, mask, label_smoothing):
     """Classification loss only; the L2 penalty is added to the gradient."""
-    with _autocast(model):
-        logits = model(images)
-    logits = logits.float()
+    logits = model(images)
     return _classification_loss(logits, labels, mask, label_smoothing), logits
 
 
@@ -305,25 +251,16 @@ def train_step(
     gradient_clip_norm: Optional[float] = None,
     preserve_first_pass_buffers: bool = True,
     no_weight_decay_on_bn: bool = False,
-    loss_scaler: Optional[_LossScaler] = None,
-    reference_global_clipping: bool = False,
 ) -> dict[str, float]:
     """Run one optimizer update over ``batches`` (a list of microbatches).
-
-    ``loss_scaler`` enables fp16 loss scaling: an update with non-finite
-    gradients is skipped and the scale is halved.
 
     Gradients of all microbatches are accumulated (weighted by their valid
     sample counts) before the update. For SAM the perturbation is computed
     from the full accumulated gradient, then every microbatch is replayed at
     the perturbed weights, so the update equals one large-batch SAM step.
     """
-    # Keep the accumulation group in host memory. Moving the whole group to
-    # CUDA here makes gradient accumulation consume nearly the same input
-    # memory as one physical batch, defeating small microbatches.
-    unpacked = [_unpack_batch(batch) for batch in batches]
-    sizes = [int(mask.sum()) if mask is not None else int(images.shape[0])
-             for images, _, mask in unpacked]
+    moved = [_move_batch_to_model_device(model, *_unpack_batch(b)) for b in batches]
+    sizes = [int(m.sum()) if m is not None else int(i.shape[0]) for i, _, m in moved]
     weights = [n / max(sum(sizes), 1) for n in sizes]
     is_sam = isinstance(optimizer, SAM)
     if is_sam and l2_reg is not None:
@@ -336,35 +273,27 @@ def train_step(
         for group in optimizer.param_groups:
             group["lr"] = learning_rate
 
-    scale = loss_scaler.scale if loss_scaler is not None else 1.0
-
     def accumulate(rng_states=None):
         """Backward over every microbatch; returns weighted loss/error."""
         loss_sum = error_sum = 0.0
         states = []
-        for i, ((images, labels, mask), weight) in enumerate(zip(unpacked, weights)):
-            images, labels, mask = _move_batch_to_model_device(
-                model, images, labels, mask)
+        for i, ((images, labels, mask), weight) in enumerate(zip(moved, weights)):
             if rng_states is None:
                 states.append(_get_rng_state() if is_sam else None)
             else:
                 _set_rng_state(rng_states[i])
             loss, logits = _loss(model, images, labels, mask, label_smoothing)
-            (loss * (weight * scale)).backward()
+            (loss * weight).backward()
             loss_sum = loss_sum + loss.detach() * weight
             error_sum = error_sum + error_rate_metric(logits.detach(), labels, mask) * weight
-            del images, labels, mask, logits, loss
         return loss_sum, error_sum, states
 
     optimizer.zero_grad(set_to_none=True)
     # The JAX reference uses the same PRNG key for both SAM loss evaluations.
     # Replay each microbatch's first-pass RNG state for the perturbed pass.
     loss, error_rate, first_pass_rng = accumulate()
-    skipped = loss_scaler is not None and not _unscale_gradients(model, scale)
 
-    if skipped:
-        pass
-    elif is_sam:
+    if is_sam:
         optimizer.first_step(zero_grad=True)  # adds the L2 gradient itself
         buffers = (
             [buffer.detach().clone() for buffer in model.buffers()]
@@ -376,49 +305,18 @@ def train_step(
             with torch.no_grad():
                 for buffer, saved in zip(model.buffers(), buffers):
                     buffer.copy_(saved)
-        if loss_scaler is not None and not _unscale_gradients(model, scale):
-            skipped = True
-            optimizer.restore_weights()
-        else:
-            optimizer.add_l2_gradient()
+        optimizer.add_l2_gradient()
     else:
         _add_l2_gradient(model, l2_reg, no_weight_decay_on_bn)
-
-    if skipped:
-        optimizer.zero_grad(set_to_none=True)
-        grad_norm = torch.zeros((), device=next(model.parameters()).device)
+    clip_limit = gradient_clip_norm if gradient_clip_norm and gradient_clip_norm > 0 else float("inf")
+    # clip_grad_norm_ returns the pre-clip norm; the logged (post-clip) norm
+    # follows from the scale it applied, so no second pass over the gradients.
+    total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_limit)
+    grad_norm = total_norm * (clip_limit / (total_norm + 1e-6)).clamp(max=1.0)
+    if is_sam:
+        optimizer.second_step(l2_already_added=True)
     else:
-        if reference_global_clipping:
-            grads = [p.grad for p in model.parameters() if p.grad is not None]
-            if grads:
-                total_norm = torch.linalg.vector_norm(torch.stack([
-                    torch.linalg.vector_norm(grad.detach()) for grad in grads
-                ]))
-            else:
-                total_norm = torch.zeros((), device=next(model.parameters()).device)
-            clip_limit = gradient_clip_norm or 0.0
-            if clip_limit > 0:
-                # Match SAM's exact rule: scale by limit / norm, without epsilon.
-                if total_norm >= clip_limit:
-                    scale = clip_limit / total_norm
-                    torch._foreach_mul_(grads, scale)
-                    grad_norm = torch.as_tensor(clip_limit, device=total_norm.device,
-                                                dtype=total_norm.dtype)
-                else:
-                    grad_norm = total_norm
-            else:
-                grad_norm = total_norm
-        else:
-            clip_limit = (gradient_clip_norm if gradient_clip_norm and
-                          gradient_clip_norm > 0 else float("inf"))
-            total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_limit)
-            grad_norm = total_norm * (clip_limit / (total_norm + 1e-6)).clamp(max=1.0)
-        if is_sam:
-            optimizer.second_step(l2_already_added=True)
-        else:
-            optimizer.step()
-    if loss_scaler is not None:
-        loss_scaler.update(skipped)
+        optimizer.step()
 
     # Metrics stay on the device (no per-step host sync); the epoch loop
     # converts them once. ``loss`` is the classification loss on the last
@@ -440,9 +338,7 @@ def _eval_sums(model, batch, label_smoothing, top_k):
     """Metric sums and valid-sample count for one batch (device tensors)."""
     images, labels, mask = _unpack_batch(batch)
     images, labels, mask = _move_batch_to_model_device(model, images, labels, mask)
-    with _autocast(model):
-        logits = model(images)
-    logits = logits.float()
+    logits = model(images)
     count = (torch.tensor(float(images.shape[0]), device=logits.device)
              if mask is None else mask.sum().to(logits.dtype))
     sums = {
@@ -510,7 +406,6 @@ def train_for_one_epoch(
     accumulation_steps: int = 1,
     freeze_batch_norm_statistics: bool = False,
     ema: Optional[ExponentialMovingAverage] = None,
-    log: bool = True,
     **step_kwargs,
 ):
     """Train for one epoch, average batch metrics, and optionally log them.
@@ -554,12 +449,11 @@ def train_for_one_epoch(
         for name, value in averages.items():
             summary_writer.add_scalar(name, value, step)
         summary_writer.flush()
-    if log:
-        logging.info(
-            "Whole training epoch done in %.2f seconds (%d steps)",
-            time.time() - start_time,
-            count,
-        )
+    logging.info(
+        "Whole training epoch done in %.2f seconds (%d steps)",
+        time.time() - start_time,
+        count,
+    )
     return averages, step
 
 
@@ -606,29 +500,15 @@ def _classification_results(model, batches, class_names, label_smoothing=0.0):
     names = list(class_names)
     accuracy = sum(a == b for a, b in zip(targets, predictions)) / max(len(targets), 1)
     report = classification_report(targets, predictions, labels=list(range(len(names))),
-                                   target_names=names, zero_division=0, digits=4)
-    f1_macro = f1_score(targets, predictions, labels=list(range(len(names))),
-                        average="macro", zero_division=0)
+                                   target_names=names, zero_division=0)
     return {"loss": loss_sum / max(len(targets), 1), "accuracy": accuracy,
-            "f1_macro": float(f1_macro), "error": 1.0 - accuracy}, report
+            "error": 1.0 - accuracy}, report
 
 
 def _make_optimizer(model, optimizer_name: str, config: dict, training: dict):
     """Create the configured optimizer with the reference's L2 handling."""
     from sam_pytorch.optimizers import make_sgd
 
-    if training.get("use_rmsprop", False):
-        # EfficientNet-paper settings: beta2=0.9, eps=0.001.
-        rms_args = {"lr": float(training["learning_rate"]),
-                    "beta": float(training.get("momentum", 0.9)),
-                    "beta2": 0.9, "eps": 0.001}
-        rho = float(config.get("sam", {}).get("rho", 0.05))
-        if optimizer_name == "sam" and rho > 0:
-            return SAM(model.parameters(), base_optimizer=RMSProp, rho=rho,
-                       l2_skip_1d=bool(training.get("no_weight_decay_on_bn", False)),
-                       **rms_args)
-        if optimizer_name in ("sam", "sgd"):
-            return RMSProp(model.parameters(), **rms_args)
     optimizer_args = {
         "lr": float(training["learning_rate"]),
         "momentum": float(training.get("momentum", 0.9)),
@@ -664,37 +544,20 @@ def _write_epoch_metrics(run_dir: Path, history: list[dict]) -> None:
 
 
 def train(model: nn.Module, data, config: dict, optimizer_name: str,
-          run_dir: str | Path, log_every: int = 1,
-          reference_global_clipping: bool = False) -> dict:
-    """Train with automatic epoch checkpoint recovery and write run reports.
-
-    Progress is logged every ``log_every`` epochs (and on the final epoch).
-    """
+          run_dir: str | Path) -> dict:
+    """Train with automatic epoch checkpoint recovery and write run reports."""
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     training = config["training"]
     device = torch.device("cuda" if torch.cuda.is_available() else
                           "mps" if torch.backends.mps.is_available() else "cpu")
     model.to(device)
-    on_cuda = device.type == "cuda"
-    mixed_precision = str(training.get("mixed_precision", "")).lower() in ("fp16", "float16")
-    if (mixed_precision or training.get("channels_last")) and not on_cuda:
-        logging.warning("mixed_precision/channels_last need CUDA; ignored on %s", device)
-    if on_cuda:
-        torch.backends.cudnn.benchmark = bool(training.get("cudnn_benchmark", False))
-    # Read by _autocast / _move_batch_to_model_device.
-    model.amp_fp16 = mixed_precision and on_cuda
-    model.channels_last = bool(training.get("channels_last", False)) and on_cuda
-    if model.channels_last:
-        model.to(memory_format=torch.channels_last)
-    loss_scaler = _LossScaler() if model.amp_fp16 else None
     optimizer = _make_optimizer(model, optimizer_name, config, training)
     ema_decay = float(training.get("ema_decay", 0.0))
     ema = ExponentialMovingAverage(model, ema_decay) if ema_decay else None
     smooth = float(training.get("label_smoothing", 0.0))
     top_k = 5 if training.get("compute_top_5_error_rate", False) else None
     evaluate_every = int(training.get("evaluate_every", 1))
-    checkpoint_every = int(training.get("checkpoint_every", 1))
     extra_checkpoints = set(training.get("additional_checkpoints_at_epochs") or [])
 
     epochs, max_steps = training.get("epochs"), training.get("max_steps")
@@ -736,8 +599,6 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
             ema.shadow = {k: v.to(device) for k, v in state["ema"].items()}
         if scheduler is not None and state.get("scheduler") is not None:
             scheduler.load_state_dict(state["scheduler"])
-        if loss_scaler is not None and state.get("loss_scaler") is not None:
-            loss_scaler.load_state_dict(state["loss_scaler"])
         if "torch_rng" in state:
             torch.set_rng_state(state["torch_rng"].cpu())
             random.setstate(state["python_rng"])
@@ -793,22 +654,18 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
                           "ema": ema.shadow if ema else None, "epoch": epoch - 1,
                           "step": step}, run_dir / f"additional_ckpt_{epoch - 1}.pt")
         tick = time.time()
-        log_epoch = epoch % log_every == 0 or epoch == epochs
         batches = data.get_train_loader(seed=int(config.get("seed", 1)) + epoch)
         remaining = None if max_steps is None else max(0, int(max_steps) - step)
         train_metrics, step = train_for_one_epoch(
             model, optimizer, batches, step=step, scheduler=scheduler, max_steps=remaining,
             accumulation_steps=accumulation,
             freeze_batch_norm_statistics=bool(training.get("freeze_batch_norm_statistics", False)),
-            ema=ema, log=log_epoch, label_smoothing=smooth,
+            ema=ema, label_smoothing=smooth,
             l2_reg=float(training.get("weight_decay", 0.001)),
             gradient_clip_norm=training.get("gradient_clip_norm", 5.0),
-            no_weight_decay_on_bn=bool(training.get("no_weight_decay_on_bn", False)),
-            loss_scaler=loss_scaler,
-            reference_global_clipping=reference_global_clipping)
+            no_weight_decay_on_bn=bool(training.get("no_weight_decay_on_bn", False)))
         # As in JAX, evaluate only every `evaluate_every` epochs.
-        last_epoch = epoch == epochs or (max_steps is not None and step >= int(max_steps))
-        evaluate = epoch % evaluate_every == 0 or last_epoch
+        evaluate = epoch % evaluate_every == 0
         nan = float("nan")
         validation = {"loss": nan, "error_rate": nan}
         extra_metrics = {}
@@ -834,22 +691,20 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
                "epoch_seconds": duration, **extra_metrics}
         history.append(row)
         elapsed = elapsed_before + time.time() - session_started
-        if epoch % checkpoint_every == 0 or last_epoch:
-            _atomic_save({
-                "model": model.state_dict(), "optimizer": optimizer.state_dict(),
-                "ema": ema.shadow if ema else None,
-                "base_optimizer": (optimizer.base_optimizer.state_dict()
-                                   if isinstance(optimizer, SAM) else None),
-                "scheduler": scheduler.state_dict() if scheduler else None,
-                "loss_scaler": loss_scaler.state_dict() if loss_scaler else None,
-                "torch_rng": torch.get_rng_state(),
-                "python_rng": random.getstate(), "numpy_rng": np.random.get_state(),
-                "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-                "mps_rng": _get_mps_rng_state(),
-                "history": history, "started_at": started_at,
-                "elapsed_seconds": elapsed,
-                "epoch_seconds": epoch_seconds, "step": step, "epoch": epoch,
-            }, last_path)
+        _atomic_save({
+            "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+            "ema": ema.shadow if ema else None,
+            "base_optimizer": (optimizer.base_optimizer.state_dict()
+                               if isinstance(optimizer, SAM) else None),
+            "scheduler": scheduler.state_dict() if scheduler else None,
+            "torch_rng": torch.get_rng_state(),
+            "python_rng": random.getstate(), "numpy_rng": np.random.get_state(),
+            "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+            "mps_rng": _get_mps_rng_state(),
+            "history": history, "started_at": started_at,
+            "elapsed_seconds": elapsed,
+            "epoch_seconds": epoch_seconds, "step": step, "epoch": epoch,
+        }, last_path)
         with (run_dir / "train.log").open("a") as log:
             log.write(
                 "epoch={epoch} step={step} lr={learning_rate:.8g} "
@@ -860,16 +715,13 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
                 "seconds={epoch_seconds:.1f}\n".format(**row)
             )
         _write_epoch_metrics(run_dir, history)
-        if log_epoch:
-            logging.info("epoch=%d/%d step=%d val_error_rate=%.4f epoch_seconds=%.1f",
-                         epoch, epochs, step, row["val_error_rate"], duration)
+        logging.info("epoch=%d step=%d val_error_rate=%.4f", epoch, step, row["val_error_rate"])
         if max_steps is not None and step >= int(max_steps):
             break
 
     # As in the JAX reference, the reported result is the final epoch's model
     # (EMA weights when EMA is on); no checkpoint is selected on validation.
     model.load_state_dict(_eval_state(model, ema))
-    model.amp_fp16 = False  # Final reported metrics are computed in fp32.
     smooth = float(training.get("label_smoothing", 0.0))
     train_loader = _plain_train_loader(data, config)
     validation_loader, test_loader = data.get_validation_loader(), data.get_test_loader()
@@ -893,7 +745,9 @@ def train(model: nn.Module, data, config: dict, optimizer_name: str,
              "[data]", f"train_samples: {len(train_loader.dataset)}",
              f"validation_samples: {len(validation_loader.dataset)}",
              f"test_samples: {len(test_loader.dataset)}", f"num_classes: {len(data.class_names)}",
-             "classes_by_index: " + ", ".join(f"{i}={name}" for i, name in enumerate(data.class_names))]
+             "classes_by_index: " + ", ".join(f"{i}={name}" for i, name in enumerate(data.class_names)), "",
+             "[epoch_metrics]", "epoch,step,learning_rate,train_loss,train_error_rate,validation_loss,val_error_rate,epoch_seconds"]
+    lines.extend(",".join(str(row[key]) for key in ("epoch", "step", "learning_rate", "train_loss", "train_error_rate", "validation_loss", "val_error_rate", "epoch_seconds")) for row in history)
     lines.extend(["", "[checkpoint]", "last_checkpoint: last.pt",
                   "final_evaluation_checkpoint: last epoch (no best-checkpoint selection)",
                   "", "[train_metrics]"])
