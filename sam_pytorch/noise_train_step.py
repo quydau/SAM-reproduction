@@ -10,6 +10,9 @@ Với batch 256 trên 8 GPU, mỗi GPU nhận 32 ảnh. File này giả lập đ
 một GPU: chia mỗi batch thành ``num_micro_batches`` micro-batch, mỗi micro-batch
 tính gradient (và nhiễu SAM) riêng, rồi lấy trung bình.
 
+Config hiện tại dùng ``num_micro_batches: 1``: cả batch 256 là một phần, ε của
+SAM tính trên cả batch (khác m = 32 của bài báo). Dùng 8 bằng ``--num-micro-batches 8``.
+
 File này tách riêng để không sửa ``train_utils.py`` / ``optimizers.py`` dùng
 chung. ``use_micro_batch_train_step`` tạm thay ``train_utils.train_step`` bằng
 bước train ở đây trong lúc chạy một run, rồi trả lại bản gốc.

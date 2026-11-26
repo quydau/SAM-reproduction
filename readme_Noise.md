@@ -2,13 +2,15 @@
 
 Config: [`configs/cifar10_noisy_resnet32.yaml`](configs/cifar10_noisy_resnet32.yaml). File config chỉ ghi giá trị, còn lý do của từng giá trị nằm ở các bảng dưới đây.
 
-**Mục tiêu.** Tái hiện 5 dòng "our implementation" của Table 4 (SAM, trang 7): accuracy trên tập test **sạch** của CIFAR-10.
+**Mục tiêu.** Tái hiện Table 4 (SAM, trang 7): accuracy trên tập test **sạch** của CIFAR-10.
+
+Repo tái lập 3 phương pháp: SGD, SAM, Bootstrap + SAM. Table 4 còn có Mixup và Bootstrap + Mixup, repo không tái lập hai dòng này.
+
+Số của bài báo:
 
 | Phương pháp | 20% | 40% | 60% | 80% |
 |---|---|---|---|---|
 | SGD | 84.8 | 68.8 | 48.2 | 26.2 |
-| Mixup | 93.0 | 90.0 | 83.8 | 70.2 |
-| Bootstrap + Mixup | 93.3 | 92.0 | 87.6 | 72.0 |
 | SAM | 95.1 | 93.4 | 90.5 | 77.9 |
 | Bootstrap + SAM | 95.4 | 94.2 | 91.8 | 79.9 |
 
@@ -20,7 +22,6 @@ Config: [`configs/cifar10_noisy_resnet32.yaml`](configs/cifar10_noisy_resnet32.y
 | **SAM** | SAM, các phần chung: §2, §3, §3.1, Appendix C.1 | Cách chính các tác giả train trên CIFAR-10 |
 | **Jiang** | Jiang et al. 2020, *Beyond Synthetic Noise* | §3.3 ghi *"following Jiang et al. (2019)"* |
 | **repo** | Code chính thức [google-research/sam](https://github.com/google-research/sam) | Chi tiết cài đặt của chính tác giả mà bài báo không ghi |
-| **Mixup** | Zhang et al. 2018 và code [mixup-cifar10](https://github.com/facebookresearch/mixup-cifar10) | §3.3 dùng *"SGD with Mixup (Zhang et al., 2017)"* |
 
 ---
 
@@ -28,14 +29,15 @@ Config: [`configs/cifar10_noisy_resnet32.yaml`](configs/cifar10_noisy_resnet32.y
 
 | Thông số | Chọn | Nằm ở đâu | Lý do |
 |---|---|---|---|
-| Các phương pháp | `sgd`, `mixup`, `sam`, `bootstrap_mixup`, `bootstrap_sam` | §3.3: *"We evaluate five variants of model training: standard SGD, SGD with Mixup, SAM, and "bootstrapped" variants of SGD with Mixup and SAM"* | Đúng 5 biến thể bài báo liệt kê, đúng 5 dòng của Table 4. Khối trên của Table 4 là số trích từ bài khác, không cần chạy |
+| Các phương pháp | `sgd`, `sam`, `bootstrap_sam` | §3.3: *"We evaluate five variants of model training: standard SGD, SGD with Mixup, SAM, and "bootstrapped" variants of SGD with Mixup and SAM"* | Chọn 3 trong 5 biến thể của bài báo, bỏ hai biến thể Mixup |
 
 ## 2. Dữ liệu
 
 | Thông số | Chọn | Nằm ở đâu | Lý do |
 |---|---|---|---|
 | Tập dữ liệu | CIFAR-10 | §3.3: *"the classical noisy-label setting for CIFAR-10"* | Bài báo nói trực tiếp |
-| Tập train | **45,000 ảnh** (nhãn nhiễu) + **5,000 validation** (nhãn sạch), chia ngẫu nhiên theo seed cố định (`validation_fraction: 0.1`). Chỉ lật nhãn phần 45k | SAM C.1 (trang 16): *"computing the accuracy on a (non-noisy) validation set composed of a random subset of 10% of the usual CIFAR training samples"* | Đồng bộ với các thí nghiệm CIFAR khác của repo (đều giữ 10% validation). Validation sạch dùng để theo dõi mỗi epoch nên tập test không bao giờ bị nhìn trong lúc train. **Tự chọn:** bài không nói lần train cuối dùng 45k hay 50k (repo tác giả mặc định `use_test_set=True` train 50k, Jiang B.2 cũng 50k); train 45k ít hơn 10% dữ liệu nên accuracy có thể thấp hơn Table 4 một chút |
+| Tập train | **50,000 ảnh** (toàn bộ train, nhãn nhiễu), không tách validation (`validation_fraction: 0.0`) | repo SAM: `use_test_set` mặc định `True`, tức train trên toàn bộ train set. Jiang B.2: *"Both datasets contain 50,000 training and 10,000 validation images"* (validation của Jiang chính là tập test 10k) | Bài báo không nói lần train cuối dùng 45k hay 50k. Code tác giả SAM và Jiang đều dùng đủ 50k |
+| Đánh giá mỗi epoch | Trên **tập test sạch 10k** (cột `val_*` trong log thật ra là test) | repo SAM với `use_test_set=True` cũng đánh giá trên test mỗi epoch | Chỉ để theo dõi, **không** dùng để chọn checkpoint hay chỉnh tham số |
 | Tập test | 10,000 ảnh test chính thức, nhãn sạch | §3.3: *"the test set remains unmodified (i.e., clean)"* | Bài báo nói trực tiếp |
 | Kiểu nhiễu | Mỗi nhãn train, **độc lập**, đổi với xác suất p sang một trong 9 lớp **khác**, chọn đều | §3.3 chỉ ghi *"randomly flipped"*. Jiang §3 (trang 3): *"the label of each training example is independently changed to a random incorrect class with a probability p"* | §3.3 không định nghĩa rõ nhưng làm theo Jiang, và Jiang định nghĩa rõ |
 | Mức nhiễu p | 0.2, 0.4, 0.6, 0.8 | §3.3, Table 4: *"Noise rate (%) 20 40 60 80"* | Bài báo nói trực tiếp |
@@ -56,18 +58,17 @@ Config: [`configs/cifar10_noisy_resnet32.yaml`](configs/cifar10_noisy_resnet32.y
 |---|---|---|---|
 | Epochs | 200 | §3.3: *"for 200 epochs"* | Bài báo nói trực tiếp |
 | Batch size | 256 | SAM C.1 (trang 15): *"For CIFAR10 ... we use a batch size of 256"* | C.1 áp cho mọi thực nghiệm CIFAR-10. Không dùng 128 của Jiang vì SAM có số riêng |
-| Micro-batch | 8 phần × 32 ảnh, mỗi phần có nhiễu SAM riêng, gradient lấy trung bình | SAM §3.1 (trang 5): *"we train all models on a single host having 8 Nvidia V100 GPUs. To compute the SAM update when parallelizing across multiple accelerators, we divide each data batch evenly among the accelerators, independently compute the SAM gradient on each accelerator, and average"*. Chú thích 5 (trang 5): *"Because SAM's performance is amplified by not syncing the perturbations, data parallelism is highly recommended"*. repo: `sync_perturbations` mặc định `False` | Câu này nằm ở §3.1, §3.3 không nhắc lại. Việc §3.3 cũng chạy trên 8 GPU đó là **suy luận** (xem mục 7). Nếu đúng thì 256 / 8 = 32 ảnh mỗi GPU. Repo chỉ có 1 GPU nên giả lập bằng 8 micro-batch ([`noise_train_step.py`](sam_pytorch/noise_train_step.py)) |
-| Micro-batch cho SGD / Mixup | Cũng 8 × 32 | SAM §3.1: *"we train all models"* trên 8 GPU | Cùng suy luận như dòng trên. Áp cho mọi phương pháp để các phương pháp được train giống nhau |
-| BN | Mỗi micro-batch 32 ảnh dùng thống kê BN của chính nó. Running stats lấy trung bình qua 8 phần. Momentum 0.1, eps 1e-5 (theo quy ước PyTorch) | SAM §3.1 mô tả 8 GPU, mỗi GPU một phần batch. repo `models/utils.py`: `nn.BatchNorm.partial(..., momentum=0.9, epsilon=1e-5)`, không truyền `axis_name`, nên không đồng bộ BN giữa các GPU. repo `eval_step`: *"# Averages the batch norm moving averages."* | Không đồng bộ BN thì mỗi GPU chỉ thấy 32 ảnh của mình. Momentum 0.9 của flax tương đương momentum 0.1 của PyTorch. Trung bình running stats mỗi bước giống hệt trung bình lúc eval, vì cập nhật EMA là tuyến tính |
+| Micro-batch | 1 (không chia), ε của SAM tính trên cả batch 256 | `num_micro_batches: 1` | Chọn để chạy nhanh trên 1 GPU T4. **Khác bài báo**: SAM §3.1 train trên 8 GPU, mỗi GPU tính ε riêng trên 32 ảnh (m = 32). Footnote 5 ghi không đồng bộ ε giúp SAM tốt hơn. Muốn giống bài báo thì thêm `--num-micro-batches 8` ([`noise_train_step.py`](sam_pytorch/noise_train_step.py)) |
+| BN | Thống kê BN trên cả batch 256. Momentum 0.1, eps 1e-5 (theo quy ước PyTorch) | repo `models/utils.py`: `nn.BatchNorm.partial(..., momentum=0.9, epsilon=1e-5)` | Momentum 0.9 của flax tương đương momentum 0.1 của PyTorch |
 | Learning rate | 0.1 | SAM Table 6 (trang 16), dòng CIFAR-10 *"WRN 28-10 (200 epochs)"*: 0.1. repo: `learning_rate` = 0.1. Jiang B.2: *"starting learning rate as 0.1"* | §3.3 không ghi. Mọi nguồn liên quan đều là 0.1, không nguồn nào cho số khác |
 | Weight decay | 5e-4 | SAM Table 6, cùng dòng trên: 0.0005 | §3.3 không ghi (xem mục 7). Đây là số được công bố trong chính bài SAM cho thiết lập gần nhất: CIFAR-10, 200 epoch, batch 256, LR 0.1. repo mặc định 0.001 chỉ là giá trị mặc định của cờ |
 | Dạng weight decay | L2 trong loss, trên mọi tham số (kể cả BN và bias), hệ số `0.5·wd·‖w‖²` | SAM §2, công thức (1): *"min_w L^SAM_S(w) + λ‖w‖²₂"*, với `w` là toàn bộ tham số. repo: `l2_reg * 0.5 * weight_l2` | Bài báo đặt L2 trên toàn bộ `w`. Hệ số 0.5 lấy từ code vì số WD trong Table 6 là giá trị `weight_decay` của chính code đó (xem mục 7) |
-| Optimizer | SGD, momentum 0.9 (momentum thường, **không** Nesterov) | SAM Algorithm 1 (trang 4): base optimizer là SGD. SAM C.1 (trang 16, thực nghiệm ImageNet): *"Weight decay is set to 0.0001 with SGD optimizer and momentum = 0.9"* | Bài báo không ghi momentum cho CIFAR. 0.9 là số momentum duy nhất bài báo ghi. Bài báo không nhắc Nesterov nên không dùng |
+| Optimizer | SGD, momentum 0.9, **Nesterov** (`nesterov: true`) | SAM Algorithm 1 (trang 4): base optimizer là SGD. SAM C.1 (trang 16): *"SGD optimizer and momentum = 0.9"*. repo `flax_training.py`: Nesterov mặc định bật | Bài báo không ghi Nesterov. Dùng theo mặc định code tác giả |
 | Lịch LR | Cosine, không warmup | SAM C.1 (trang 15–16, thực nghiệm ImageNet): *"The initial learning rate is set to 1.0 and decayed using a cosine schedule"*. SAM C.2 (fine-tuning): *"cosine learning rate decay"* | Bài báo không ghi lịch LR cho CIFAR. Cosine là lịch LR duy nhất bài báo dùng. Bài báo không nhắc warmup cho các lịch này nên không dùng |
-| Gradient clipping | **Không dùng** | Bài báo không nhắc | Không có trong bài báo nên không thêm |
+| Gradient clipping | Chuẩn gradient tối đa 5.0 (`gradient_clip_norm: 5.0`) | repo `flax_training.py`: gradient clipping mặc định 5.0 | Bài báo không nhắc. Dùng theo mặc định code tác giả |
 | Label smoothing | **Không dùng** | Bài báo không nhắc | Không có trong bài báo nên không thêm |
-| Model báo cáo | Epoch 200 (cuối), không chọn checkpoint | §3.3: *"for 200 epochs"*. Table 4: *"Test accuracy on the clean test set"* | Train đủ 200 epoch rồi đánh giá model đó, không thêm bước chọn checkpoint mà bài báo không mô tả. `val_loss`/`val_error_rate` mỗi epoch đo trên 5k validation sạch, chỉ để theo dõi, không dùng để chọn gì. Tập test chỉ được đo **đúng một lần** trên model epoch cuối |
-| Seed | 1 (chạy thêm bằng `--seed 1 2 3 4 5`) | SAM §3.1: *"We run five independent replicas"* | Câu này ở §3.1. Table 4 không có ±, nên không chắc §3.3 chạy 5 lần. Nên chạy 5 seed nếu đủ tài nguyên |
+| Model báo cáo | Epoch 200 (cuối), không chọn checkpoint | §3.3: *"for 200 epochs"*. Table 4: *"Test accuracy on the clean test set"* | Train đủ 200 epoch rồi đánh giá model đó, không thêm bước chọn checkpoint mà bài báo không mô tả. Kết quả ghi trong `results.txt`, mục `[test_metrics]` |
+| Seed | 1 (mới chạy 1 seed; chạy thêm bằng `--seed 1 2 3 4 5`) | SAM §3.1: *"We run five independent replicas"* | Câu này ở §3.1. Table 4 không có ±, nên không chắc §3.3 chạy 5 lần. Nên chạy 5 seed nếu đủ tài nguyên |
 
 ## 5. SAM
 
@@ -78,17 +79,11 @@ Config: [`configs/cifar10_noisy_resnet32.yaml`](configs/cifar10_noisy_resnet32.y
 | Chuẩn của ε | L2 (p = 2): `ε = ρ·g / ‖g‖₂` | SAM §2 (trang 3): *"p = 2 is typically optimal"* | SAM chuẩn, dùng cho mọi thực nghiệm |
 | Xấp xỉ gradient | Bậc một, bỏ số hạng Hessian | SAM §2 (trang 4): *"we drop the second-order terms"* | SAM chuẩn |
 
-## 6. Mixup và Bootstrap
+## 6. Bootstrap
 
 | Thông số | Chọn | Nằm ở đâu | Lý do |
 |---|---|---|---|
-| α | 1, 8, 16, 32 (mỗi α một run) | §3.3: *"we tried all values of α∈{1, 8, 16, 32}"* | Bài báo nói trực tiếp |
-| Báo cáo Mixup | α có accuracy test trung bình cao nhất ở từng mức nhiễu | §3.3: *"conservatively report the best score for each noise level"* | Bài báo nói trực tiếp. Lưu ý: chọn trên tập test nên số hơi lạc quan |
-| λ | Một λ ~ Beta(α, α) cho mỗi minibatch 256 ảnh | Mixup `train.py`: `lam = np.random.beta(alpha, alpha)`, gọi một lần mỗi minibatch | §3.3 không mô tả cách trộn, nên lấy từ bài gốc. Minibatch là 256 theo SAM C.1 |
-| Cặp trộn | Hoán vị ngẫu nhiên của chính batch | Mixup §2: *"mixup is applied to the same minibatch after random shuffling"*. `train.py`: `torch.randperm(batch_size)` | Như trên |
-| Nhãn trộn | One-hot trộn `λ·y_i + (1−λ)·y_j` | Mixup: *"where y_i, y_j are one-hot label encodings"* | Như trên. Cho kết quả giống `λ·CE(y_a) + (1−λ)·CE(y_b)` |
-| Khi nào trộn | Chỉ khi train. Đánh giá và dự đoán nhãn bootstrap thì dùng ảnh gốc | Mixup là kỹ thuật lúc train | Đánh giá phải trên dữ liệu thật |
-| Bootstrap | (1) train model gốc 200 epoch, (2) model đó dự đoán nhãn (lớp argmax) cho 45k ảnh train, (3) train lại từ đầu trên nhãn đó | §3.3: *"first trained as usual and then retrained from scratch on the labels predicted by the initially trained model"* | Ba bước khớp câu của bài báo. "Labels predicted" là lớp model dự đoán, tức argmax. Dự đoán dùng ảnh gốc, như khi đánh giá |
+| Bootstrap | (1) train SAM 200 epoch, (2) model đó dự đoán nhãn (lớp argmax) cho 50k ảnh train, (3) train lại từ đầu trên nhãn đó | §3.3: *"first trained as usual and then retrained from scratch on the labels predicted by the initially trained model"* | Ba bước khớp câu của bài báo. "Labels predicted" là lớp model dự đoán, tức argmax. Dự đoán dùng ảnh gốc (không augmentation), như khi đánh giá |
 
 ## 7. Những điểm chưa có bằng chứng
 
@@ -98,88 +93,32 @@ Các điểm sau bắt buộc phải có một giá trị, nhưng bài báo khô
 |---|---|---|
 | Weight decay cho ResNet-32 ở §3.3 | 5e-4 | §3.3 không ghi. Lấy từ Table 6 (CIFAR-10, 200 epoch), là số gần nhất có trong bài báo |
 | Hệ số 0.5 của L2 | `0.5·wd·‖w‖²` | Công thức (1) viết `λ‖w‖²`, không có 0.5. Repo dùng 0.5 vì số WD của Table 6 được tạo ra bởi code dùng 0.5. Nếu đọc đúng chữ công thức (1) thì L2 mạnh gấp đôi |
-| §3.3 chạy trên 8 GPU | 8 micro-batch × 32 | Câu về 8 GPU nằm ở §3.1. §3.3 không nhắc phần cứng |
-| α khi Bootstrap + Mixup | Cùng α ở hai giai đoạn | Bài báo chỉ ghi "bootstrapped variants of SGD with Mixup" và "tried all values of α" |
-| Kích thước ResNet-32 | ResNet-32 chuẩn của He et al. 2016 (16/32/64 kênh, 0.46M tham số, shortcut option A) | Bài báo chỉ ghi "a simple model of similar size (ResNet-32)". Jiang B.2 (trang 16) ghi *"training ResNet-32 on the clean training dataset, the validation accuracy reaches 95.2% on CIFAR-10"*. Con số này cao hơn nhiều so với mức thường thấy của ResNet-32 chuẩn trên CIFAR-10 sạch (khoảng 92–93%). Code của Jiang xác nhận model **rộng hơn** (xem mục 9). Model của SAM §3.3 thì vẫn chưa biết chắc |
+| Nesterov, gradient clipping 5.0 | Bật | Bài báo không ghi. Lấy theo mặc định code tác giả |
+| Micro-batch | 1 (ε trên cả batch 256) | Bài báo (§3.1) dùng m = 32 trên 8 GPU. Đây là khác biệt đã biết |
+| Tập train 45k hay 50k | 50k | Bài báo không ghi. Code tác giả và Jiang dùng 50k |
+| Kích thước ResNet-32 | ResNet-32 chuẩn của He et al. 2016 (16/32/64 kênh, 0.46M tham số, shortcut option A) | Bài báo chỉ ghi "a simple model of similar size (ResNet-32)". Jiang B.2 (trang 16) ghi *"training ResNet-32 on the clean training dataset, the validation accuracy reaches 95.2% on CIFAR-10"*. Con số này cao hơn nhiều so với mức thường thấy của ResNet-32 chuẩn trên CIFAR-10 sạch (khoảng 92–93%). Code của Jiang (MentorMix) dùng ResNet-32 **rộng hơn** (64/128/256/512 kênh, ~29M tham số). Model của SAM §3.3 thì vẫn chưa biết chắc |
 
 ## 8. Cách chạy
 
 ```bash
-# 4 mức nhiễu x 5 phương pháp (Mixup và Bootstrap + Mixup chạy mỗi α trong mixup.alphas).
-# bootstrap_* tái dùng run sam / mixup cùng mức nhiễu, seed, α (tự train nếu chưa có).
+# 4 mức nhiễu x 3 phương pháp đã thực nghiệm.
+# bootstrap_sam tái dùng run sam cùng mức nhiễu và seed (tự train nếu chưa có).
 python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32.yaml \
-  --method sgd mixup sam bootstrap_mixup bootstrap_sam --noise-rate 0.2 0.4 0.6 0.8 --seed 1
-
-# Chỉ chạy một α cho Mixup
-python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32.yaml \
-  --method mixup bootstrap_mixup --mixup-alpha 8
+  --method sgd sam bootstrap_sam --noise-rate 0.2 0.4 0.6 0.8 --seed 1
 
 # Chạy thử nhanh (5 bước mỗi run)
 python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32.yaml \
-  --method sgd mixup sam bootstrap_mixup bootstrap_sam --noise-rate 0.8 --mixup-alpha 8 --steps 5
+  --method sgd sam bootstrap_sam --noise-rate 0.8 --steps 5
 
-# Gom kết quả thành bảng giống Table 4 (ghi ra outputs/cifar10_noisy/summary.md)
+# Gom kết quả thành bảng giống Table 4
 python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32.yaml --summarize
 ```
 
 | Mục | Ghi chú |
 |---|---|
 | Yêu cầu | Python ≥ 3.10, vì code có cú pháp `str \| Path` |
-| Output | `outputs/cifar10_noisy/resnet32/noise_{20,40,60,80}/{sgd, sam, bootstrap_sam, mixup_alpha{α}, bootstrap_mixup_alpha{α}}/seed_{s}/` |
-| File trong mỗi run | `results.txt` (accuracy test ở epoch cuối), `metrics.csv`, `train.log`, `config.yaml` (giá trị thật đã dùng, kể cả ρ và α) |
+| Output | `outputs/authordefaults/cifar10_noisy/resnet32/noise_{20,40,60,80}/{sgd, sam, bootstrap_sam}/seed_{s}/` |
+| Bảng tổng kết | `outputs/authordefaults/cifar10_noisy/summary.md` |
+| File trong mỗi run | `results.txt` (accuracy test ở epoch cuối), `metrics.csv`, `train.log`, `config.yaml` (giá trị thật đã dùng, kể cả ρ) |
 | Bootstrap | Có thêm `bootstrap_labels.pt` và `bootstrap_stats.txt`. Nếu train lại run gốc thì phải xóa `bootstrap_labels.pt` để nhãn được dự đoán lại |
-| Số run | Mỗi mức nhiễu và mỗi seed: 3 run (SGD, SAM, Bootstrap + SAM) + 4 run Mixup + 4 run Bootstrap + Mixup, mỗi run 200 epoch |
-
-## 9. Biến thể: ResNet-32 của Jiang (`configs/cifar10_noisy_resnet32_jiang.yaml`)
-
-Config này giống hệt `cifar10_noisy_resnet32.yaml`, chỉ khác `model: resnet32_jiang` (`sam_pytorch/resnet_jiang.py`) và mặc định `num_micro_batches: 1`. Output nằm ở `outputs/cifar10_noisy/resnet32_jiang/`, tách riêng với các run ResNet-32 chuẩn.
-
-| Thông số | Chọn | Nằm ở đâu | Lý do |
-|---|---|---|---|
-| Kiến trúc | init conv 3→64; 3 stage × 5 block, 128 / 256 / 512 kênh; block pre-activation; BN → leaky ReLU → avg-pool → fc ở cuối. **29,442,378 tham số** | Jiang, code `google-research/mentormix/code/resnet_model.py` (`build_model`, `filters = [64, 128, 256, 512]` khi `use_bottleneck=False`); `cifar_train_mentormix.py`: `num_residual_units=5`, `use_bottleneck=False` | SAM §3.3 làm theo Jiang và ghi *"a simple model of similar size (ResNet-32)"*. Đây là ResNet-32 mà Jiang thật sự dùng, hợp với con số 95.2% trên CIFAR-10 sạch (B.2) |
-| Leaky ReLU | 0.1 | `cifar_train_mentormix.py`: `relu_leakiness=0.1` | Đúng code gốc |
-| Thứ tự ở block đầu stage 1 | LeakyReLU rồi mới BN, skip lấy sau kích hoạt | `_residual(..., activate_before_residual=True)` | Đúng code gốc (các block khác là BN → LeakyReLU, skip lấy trước kích hoạt) |
-| Skip connection khi đổi kênh | avg-pool (kernel = stride) rồi pad kênh bằng 0 hai bên | `_residual`: `tf.nn.avg_pool(orig_x, stride, stride, 'VALID')` + `tf.pad` | Đúng code gốc |
-| BatchNorm | eps 1e-3, momentum 0.9 (TF), tức `momentum=0.1` trong PyTorch | `_batch_norm`: `assign_moving_average(..., 0.9)`, `batch_normalization(..., 0.001)` | Đúng code gốc |
-| Khởi tạo | conv: normal(0, √(2/(k²·out))), tức Kaiming normal fan_out; fc: U(±√(3/512)), bias 0 | `_conv`, `_fully_connected` (`uniform_unit_scaling_initializer(factor=1.0)`) | Đúng code gốc |
-| Weight decay, LR, lịch LR, batch | **Giữ như config chuẩn** (5e-4, 0.1 cosine, 256) | Mục 4 | Chỉ đổi model để so sánh được với run ResNet-32 chuẩn. Jiang dùng wd 2e-4 chỉ trên weight (`decay()`), batch 128, LR ×0.9 theo bậc. Đó là setup của Jiang, không phải của SAM |
-| Micro-batch | Mặc định 1 (không chia). Muốn chia 8 × 32 như mục 5 thì thêm `--num-micro-batches 8` | `--num-micro-batches` trong `label_noise.py` | Model nặng ~63 lần ResNet-32 chuẩn. Chia 8 micro-batch nhỏ làm GPU chạy kém hiệu quả. **Lưu ý:** với 1, ε của SAM tính trên cả batch 256, khác với m = 32 của bài báo (§3.1, footnote 5) |
-
-**Vì sao chắc đây là model Jiang dùng cho CIFAR:**
-
-| Bằng chứng | Nằm ở đâu |
-|---|---|
-| ResNet-32 chỉ dùng cho CIFAR, các dataset khác dùng Inception-ResNet-v2 | Jiang §5 (trang 6): *"we train networks from scratch using ResNet-32 for CIFAR and Inception-ResNet-v2 for WebVision"* |
-| Code MentorMix chỉ có CIFAR-10/100 và một backbone duy nhất `resnet32` | `cifar_train_mentormix.py` (`--studentnet` chỉ nhận `resnet32`), `training_mentormix_command.sh` |
-| Jiang cố ý làm rộng model | `resnet_model.py` của Jiang được sửa từ `tensorflow/models` (v1.13.0, `research/resnet/resnet_model.py`). Bản gốc có `init_conv` 16 kênh và `filters = [16, 16, 32, 64]` (ResNet-32 chuẩn). Jiang đổi thành 64 và `[64, 128, 256, 512]`, đồng thời đảo thứ tự BN/ReLU ở block đầu |
-| Model "cùng cỡ" với các bài trước | Jiang §5.1.2: *"all methods are trained using networks of similar capacity (ours is ResNet-32)"*; SAM §3.3: *"a simple model of similar size (ResNet-32) … following Jiang et al. (2019)"* |
-| Hợp với accuracy trên CIFAR-10 sạch | Jiang B.2: 95.2% |
-
-**Khác biệt nhỏ còn lại:** conv stride 2 trong TF (`padding='SAME'`) pad lệch (0 trên/trái, 1 dưới/phải), còn PyTorch `padding=1` pad đều hai bên. Ảnh chỉ lệch 1 pixel, không ảnh hưởng số tham số hay kiến trúc.
-
-**Chưa xác định được:** dữ liệu nhiễu của Jiang được tải về sẵn (`cifar.zip`), nên code không cho biết cách lật nhãn. Code công khai (TF1, 1 GPU) cũng có thể không giống hệt bản họ chạy trên 8 V100.
-
-```bash
-python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32_jiang.yaml \
-  --method sam --noise-rate 0.8 --seed 1                        # không chia batch
-python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32_jiang.yaml \
-  --method sam --noise-rate 0.8 --seed 1 --num-micro-batches 8  # 8 x 32 như bài báo
-```
-
-Không đổi `--num-micro-batches` giữa chừng một run: hai cách dùng chung thư mục output, nên khi resume từ `last.pt` sẽ trộn hai cách.
-
-## 10. Biến thể: train đủ 50k, không chia micro-batch (`configs/cifar10_noisy_resnet32_train50k.yaml`)
-
-Config này giống hệt `cifar10_noisy_resnet32.yaml` (ResNet-32 chuẩn), chỉ khác 3 chỗ dưới đây. Output ghi vào `outputs/train50k/cifar10_noisy/resnet32/`, tách riêng với các run 45k.
-
-| Thông số | Chọn | Nằm ở đâu | Lý do |
-|---|---|---|---|
-| Tập train | **50,000 ảnh** (toàn bộ train, nhãn nhiễu), không tách validation (`validation_fraction: 0.0`) | repo SAM: `use_test_set` mặc định `True`, tức train trên toàn bộ train set. Jiang B.2: *"Both datasets contain 50,000 training and 10,000 validation images"* (validation của Jiang chính là tập test 10k) | Bài báo không nói lần train cuối dùng 45k hay 50k. Code tác giả SAM và Jiang đều dùng đủ 50k |
-| Đánh giá mỗi epoch | Trên **tập test sạch 10k** (cột `val_*` trong log thật ra là test) | repo SAM với `use_test_set=True` cũng đánh giá trên test mỗi epoch | Chỉ để theo dõi, **không** dùng để chọn checkpoint hay chỉnh tham số |
-| Kết quả báo cáo | Accuracy trên test sạch của model ở **epoch 200 (cuối)**, ghi trong `results.txt`, mục `[test_metrics]` | §3.3: *"for 200 epochs"*; Table 4: *"Test accuracy on the clean test set"* | Giống mục 4. Không chọn epoch tốt nhất, vì bài báo không mô tả bước chọn đó |
-| Micro-batch | 1 (không chia), ε của SAM tính trên cả batch 256 | — | Người chạy chọn để chạy nhanh hơn. **Khác bài báo**: SAM §3.1 dùng m = 32 (8 GPU), footnote 5 ghi việc không đồng bộ ε giữa các GPU giúp SAM tốt hơn. Muốn giống bài báo thì thêm `--num-micro-batches 8` |
-
-```bash
-python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32_train50k.yaml \
-  --method sgd sam --noise-rate 0.8 --seed 1
-```
+| Số run | Mỗi mức nhiễu và mỗi seed: 3 run (SGD, SAM, Bootstrap + SAM), mỗi run 200 epoch |

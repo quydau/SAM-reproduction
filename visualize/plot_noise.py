@@ -24,19 +24,14 @@ NOISE_RATES = (0.2, 0.4, 0.6, 0.8)
 # Table 4 (SAM paper, trang 7), dòng "our implementation".
 PAPER = {
     "sgd": (84.8, 68.8, 48.2, 26.2),
-    "mixup": (93.0, 90.0, 83.8, 70.2),
-    "bootstrap_mixup": (93.3, 92.0, 87.6, 72.0),
     "sam": (95.1, 93.4, 90.5, 77.9),
     "bootstrap_sam": (95.4, 94.2, 91.8, 79.9),
 }
 
-# Phương pháp được vẽ (đúng như slide), nhãn và màu.
 STYLE = {
     "sgd": ("SGD", "#5B7FD6"),
     "sam": ("SAM", "#D2693A"),
     "bootstrap_sam": ("Boot+SAM", "#1F2A6B"),
-    "mixup": ("Mixup", "#3A9E6F"),
-    "bootstrap_mixup": ("Boot+Mixup", "#8E5BB5"),
 }
 DEFAULT_METHODS = ("sgd", "sam", "bootstrap_sam")
 
@@ -54,7 +49,7 @@ def reproduced_from_runs(results_dir: Path, methods) -> dict:
     """Quét đệ quy results_dir tìm .../noise_<XX>/<method>/seed_*/results.txt.
 
     Kết quả có thể nằm rải rác trong nhiều thư mục con (mỗi máy chạy một phần).
-    Mỗi ô = trung bình các seed; Mixup lấy α có trung bình cao nhất.
+    Mỗi ô = trung bình các seed.
     """
     found = {}  # (method, noise %) -> {run name: [acc, ...]}
     for results_file in results_dir.rglob("seed_*/results.txt"):
@@ -62,7 +57,7 @@ def reproduced_from_runs(results_dir: Path, methods) -> dict:
         noise_name = results_file.parent.parent.parent.name
         if not noise_name.startswith("noise_"):
             continue
-        method = re.sub(r"_alpha[0-9.]+$", "", run_name)
+        method = run_name
         accuracy = _test_accuracy(results_file)
         if accuracy is not None:
             key = (method, int(noise_name[len("noise_"):]))
@@ -94,7 +89,7 @@ def plot(reproduced: dict, methods, out_path: Path) -> None:
     x = list(range(len(NOISE_RATES)))
     fig, ax = plt.subplots(figsize=(8.5, 3.8), dpi=200)
 
-    # Thứ tự legend như slide: với mỗi phương pháp, "bài báo" rồi "tái lập".
+    # Thứ tự legend: với mỗi phương pháp, "bài báo" rồi "tái lập".
     for method in methods:
         label, color = STYLE[method]
         ax.plot(x, PAPER[method], color=color, linewidth=2.2, marker="o",

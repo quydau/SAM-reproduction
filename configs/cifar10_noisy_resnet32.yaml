@@ -1,6 +1,6 @@
-# Thử nghiệm thăm dò: giống cifar10_noisy_resnet32_train50k.yaml (batch 256, wd 5e-4, 50k, micro-batch 1)
-# nhưng dùng mặc định của code SAM chính thức (google-research/sam, flax_training.py): nesterov True, gradient clipping 5.0.
-# Bài SAM không nêu hai giá trị này cho thí nghiệm nhiễu; chỉ là mặc định của code tác giả.
+# SAM §3.3 (Table 4): ResNet-32 chuẩn, CIFAR-10 nhãn nhiễu, train đủ 50k ảnh.
+# nesterov và gradient clipping 5.0 lấy theo mặc định code SAM chính thức.
+# Giải thích từng giá trị: readme_Noise.md.
 experiment: cifar10_noisy_resnet32_authordefaults
 dataset: cifar10
 data_root: data
@@ -38,8 +38,5 @@ sam:
     0.4: 0.1
     0.6: 0.1
     0.8: 0.05
-
-mixup:
-  alphas: [1, 8, 16, 32]
 
 output_root: outputs/authordefaults

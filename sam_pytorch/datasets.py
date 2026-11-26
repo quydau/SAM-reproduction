@@ -229,45 +229,6 @@ class CIFAR10DataModule:
             batch_size=min(32, self.batch_size))
 
 
-class _MixupCollator:
-    """Ghép batch rồi trộn Mixup (Zhang et al., 2017).
-
-    Với mỗi batch:
-      lam ~ Beta(alpha, alpha)                      (một giá trị cho cả batch)
-      perm = hoán vị ngẫu nhiên các mẫu trong batch
-      ảnh_trộn = lam * ảnh + (1 - lam) * ảnh[perm]
-      nhãn_trộn = lam * one_hot(nhãn) + (1 - lam) * one_hot(nhãn[perm])
-
-    Nhãn trả về là phân phối xác suất (B, num_classes). ``F.cross_entropy`` trong
-    train_step nhận trực tiếp nhãn dạng này, nên không cần sửa vòng train.
-    """
-
-    def __init__(self, mixup_alpha: float, num_classes: int):
-        if mixup_alpha <= 0:
-            raise ValueError("mixup_alpha must be positive")
-        self.mixup_alpha = mixup_alpha
-        self.num_classes = num_classes
-
-    def __call__(self, samples):
-        images, labels = default_collate(samples)
-
-        beta_distribution = torch.distributions.Beta(self.mixup_alpha, self.mixup_alpha)
-        lam = float(beta_distribution.sample())
-        permutation = torch.randperm(images.shape[0])
-
-        one_hot_labels = torch.nn.functional.one_hot(labels, self.num_classes).float()
-        mixed_images = lam * images + (1.0 - lam) * images[permutation]
-        mixed_labels = lam * one_hot_labels + (1.0 - lam) * one_hot_labels[permutation]
-        return mixed_images, mixed_labels
-
-
-# Data module riêng cho thực nghiệm label noise (§3.3), tách khỏi CIFAR10DataModule
-# để các thí nghiệm khác không bị ảnh hưởng. Chỉ làm nhiễu nhãn phần train;
-# validation và test luôn sạch.
-#   validation_fraction = 0   -> train trên đủ 50,000 ảnh (giống mặc định
-#                                use_test_set=True của repo SAM).
-#   validation_fraction = 0.1 -> 45,000 train / 5,000 validation (chế độ dùng
-#                                để grid search rho, như use_test_set=False).
 class CIFAR10DataModuleForNoise:
     NUM_CLASSES = 10
     FULL_TRAIN_SIZE = 50_000
@@ -278,17 +239,15 @@ class CIFAR10DataModuleForNoise:
                  horizontal_flip_probability: float = 0.5,
                  pin_memory: Optional[bool] = None,
                  label_noise_rate: float = 0.0, noise_seed: int = 0,
-                 train_labels_override: Optional[list[int]] = None,
-                 mixup_alpha: Optional[float] = None):
+                 train_labels_override: Optional[list[int]] = None):
         """``label_noise_rate``: mỗi nhãn train bị đổi độc lập với xác suất này
-        (``make_symmetric_noisy_labels``); ``train_labels_override`` thay toàn bộ nhãn train (dùng cho bootstrap);
-        ``mixup_alpha`` bật Mixup cho loader train có augmentation (None = tắt)."""
+        (``make_symmetric_noisy_labels``); ``train_labels_override`` thay toàn bộ
+        nhãn train (dùng cho bootstrap)."""
         if batch_size < 1 or num_workers < 0:
             raise ValueError("batch_size must be positive and num_workers >= 0")
         if not 0.0 <= validation_fraction < 1.0:
             raise ValueError("validation_fraction must be in [0, 1)")
 
-        self.mixup_alpha = mixup_alpha
         self.data_root = data_root
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -338,31 +297,22 @@ class CIFAR10DataModuleForNoise:
             a != b for a, b in zip(self.train_labels, self.clean_train_labels))
 
     def _loader(self, dataset, *, shuffle: bool, drop_last: bool, seed: int,
-                cutout: bool = False, batch_size: Optional[int] = None,
-                collate_fn=None) -> DataLoader:
+                cutout: bool = False, batch_size: Optional[int] = None) -> DataLoader:
         generator = torch.Generator().manual_seed(seed)
-        if collate_fn is None:
-            collate_fn = _BatchCollator(self.augmentation, enabled=cutout)
         return DataLoader(
             dataset, batch_size=batch_size or self.batch_size, shuffle=shuffle,
             drop_last=drop_last, num_workers=self.num_workers,
             pin_memory=self.pin_memory, generator=generator,
-            collate_fn=collate_fn,
+            collate_fn=_BatchCollator(self.augmentation, enabled=cutout),
             persistent_workers=self.num_workers > 0)
 
     def get_train_loader(self, use_augmentations: bool = True,
                          seed: int = 1) -> DataLoader:
-        """Loader train. Mixup chỉ áp dụng khi train (use_augmentations=True);
-        loader dùng để đánh giá trên tập train thì giữ nhãn nguyên."""
+        """Loader train (nhãn nhiễu, hoặc nhãn bootstrap nếu có override)."""
         source = self._train_augmented if use_augmentations else self._train_plain
         dataset = _RelabeledSubset(source, self.train_indices, self.train_labels)
-
-        use_mixup = use_augmentations and self.mixup_alpha is not None
-        collate_fn = (_MixupCollator(self.mixup_alpha, self.NUM_CLASSES)
-                      if use_mixup else None)
         return self._loader(dataset, shuffle=True, drop_last=use_augmentations,
-                            seed=seed, cutout=use_augmentations,
-                            collate_fn=collate_fn)
+                            seed=seed, cutout=use_augmentations)
 
     def get_train_prediction_loader(self) -> DataLoader:
         """Ảnh train theo thứ tự cố định, không augmentation (cho bootstrap)."""

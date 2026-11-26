@@ -62,15 +62,15 @@ outputs/{dataset}/{model}/{augmentation}/{optimizer}/seed_{seed}/
 
 Ví dụ: `outputs/cifar10/wrn16x8/basic/sam/seed_1/`.
 
-## §3.3 Robustness to label noise (Table 4): SGD, Mixup, SAM, Bootstrap + Mixup, Bootstrap + SAM
+## §3.3 Robustness to label noise (Table 4): SGD, SAM, Bootstrap + SAM
 
-Mục này tái hiện năm dòng "our implementation" trong Table 4: ResNet-32 train từ đầu trên CIFAR-10 có nhãn nhiễu, đánh giá trên tập test sạch. Repo gốc google-research/sam không có code cho thí nghiệm này, nên pipeline được viết mới: [`label_noise.py`](sam_pytorch/label_noise.py), [`resnet_cifar.py`](sam_pytorch/resnet_cifar.py), `CIFAR10DataModuleForNoise` và Mixup trong [`datasets.py`](sam_pytorch/datasets.py), bước train 8 micro-batch trong [`noise_train_step.py`](sam_pytorch/noise_train_step.py), và config [`cifar10_noisy_resnet32.yaml`](configs/cifar10_noisy_resnet32.yaml).
+Mục này tái hiện ba dòng SGD, SAM, Bootstrap + SAM trong Table 4 (không tái lập Mixup): ResNet-32 train từ đầu trên CIFAR-10 có nhãn nhiễu, đánh giá trên tập test sạch. Repo gốc google-research/sam không có code cho thí nghiệm này, nên pipeline được viết mới: [`label_noise.py`](sam_pytorch/label_noise.py), [`resnet_cifar.py`](sam_pytorch/resnet_cifar.py), `CIFAR10DataModuleForNoise` trong [`datasets.py`](sam_pytorch/datasets.py), bước train chia micro-batch (tùy chọn) trong [`noise_train_step.py`](sam_pytorch/noise_train_step.py), và config [`cifar10_noisy_resnet32.yaml`](configs/cifar10_noisy_resnet32.yaml).
 
 **Toàn bộ thông số, câu trích dẫn chứng minh từ bài báo và lý do chọn, cùng cách chạy: xem [readme_Noise.md](readme_Noise.md).**
 
 ```bash
 python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32.yaml \
-  --method sgd mixup sam bootstrap_mixup bootstrap_sam --noise-rate 0.2 0.4 0.6 0.8 --seed 1
+  --method sgd sam bootstrap_sam --noise-rate 0.2 0.4 0.6 0.8 --seed 1
 python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32.yaml --summarize
 ```
 
