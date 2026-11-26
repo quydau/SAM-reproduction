@@ -3,7 +3,6 @@ dataset: oxford_iiit_pet
 data_root: data
 model: efficientnet_b0
 num_classes: 37
-optimizers: [sgd, sam]
 seed: 1
 
 split:
@@ -11,16 +10,16 @@ split:
   seed: 1
 
 training:
-  # T4 (16 GB, fp32) tuning: effective batch 256 via 64 x 4 accumulation.
+  # Tesla T4 (16 GB, fp16): effective batch 1024 via 256 x 4 accumulation.
   # BatchNorm statistics are frozen, so microbatch size does not change results.
-  # If CUDA OOM occurs with SAM, use 32 x 8.
-  batch_size: 64
-  gradient_accumulation_steps: 4
-  effective_batch_size: 256
+  # If CUDA OOM occurs with SAM, use 128 x 8 (or 64 x 16); note this changes how
+  # the epoch remainder is dropped when the train size is not a multiple of 1024.
+  batch_size: 128
+  gradient_accumulation_steps: 8
+  effective_batch_size: 1024
   epochs: null
-  max_steps: 20000 # Paper's 5k steps at batch 1024, exposure-matched to batch 256.
-  num_workers: 4
-  learning_rate: 0.004 # Inferred linear scaling from C.2: 0.016 @1024, 0.008 @512.
+  max_steps: 5000 # Paper's C.2: 5k steps at batch 1024.
+  learning_rate: 0.016 # Paper C.2 value for batch 1024.
   scheduler: cosine
   weight_decay: 0.00001
   momentum: 0.9
@@ -28,22 +27,13 @@ training:
   label_smoothing: 0.1 # Matches the official SAM README's EfficientNet fine-tuning command.
   gradient_clip_norm: 1.0 # Matches --gradient_clipping 1.0 in that command.
   freeze_batch_norm_statistics: true
+  evaluate_every: 10 # Validate sparsely; the last epoch is always evaluated.
 
 sam:
   rho: 0.05
 
-pretrained_weights: IMAGENET1K_V1 # T4-friendly B0 substitute; paper fine-tunes EffNet-B7/L2.
-replace_classifier: true
+pretrained_weights: efficientnet_b0.ra_in1k # Public timm ImageNet-1K RandAugment checkpoint.
 image:
   crop_size: 224
-  eval_center_crop_fraction: 0.875
-  interpolation: bicubic
-  normalization: imagenet
-  train_preprocessing: sam_center_crop_then_resize_no_augmentation
-  eval_preprocessing: sam_center_crop_then_resize
-
-# C.2 reports no augmentation; train/validation/test share deterministic
-# center-crop, bicubic resize, and ImageNet normalization preprocessing.
-# Batch-256 LR, B0 weights/resolution, and 20k-step exposure match are adaptations.
 
 output_root: outputs

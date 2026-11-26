@@ -28,7 +28,7 @@ import torchvision
 from sklearn.metrics import classification_report
 from torch import nn
 
-from sam_pytorch.optimizers import SAM, ExponentialMovingAverage, RMSProp
+from sam_pytorch.optimizers import SAM, ExponentialMovingAverage
 
 
 def load_config(path: str | Path) -> dict:
@@ -509,18 +509,6 @@ def _make_optimizer(model, optimizer_name: str, config: dict, training: dict):
     """Create the configured optimizer with the reference's L2 handling."""
     from sam_pytorch.optimizers import make_sgd
 
-    if training.get("use_rmsprop", False):
-        # EfficientNet-paper settings: beta2=0.9, eps=0.001.
-        rms_args = {"lr": float(training["learning_rate"]),
-                    "beta": float(training.get("momentum", 0.9)),
-                    "beta2": 0.9, "eps": 0.001}
-        rho = float(config.get("sam", {}).get("rho", 0.05))
-        if optimizer_name == "sam" and rho > 0:
-            return SAM(model.parameters(), base_optimizer=RMSProp, rho=rho,
-                       l2_skip_1d=bool(training.get("no_weight_decay_on_bn", False)),
-                       **rms_args)
-        if optimizer_name in ("sam", "sgd"):
-            return RMSProp(model.parameters(), **rms_args)
     optimizer_args = {
         "lr": float(training["learning_rate"]),
         "momentum": float(training.get("momentum", 0.9)),

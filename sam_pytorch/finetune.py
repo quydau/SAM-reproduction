@@ -1,4 +1,4 @@
-"""Fine-tune EfficientNet-B0 on Flowers102 or Oxford-IIIT Pet."""
+"""Fine-tune EfficientNet-B0 on one of the four configured image datasets."""
 
 import argparse
 import copy
@@ -6,10 +6,20 @@ import itertools
 import logging
 from pathlib import Path
 
-from sam_pytorch.datasets import (Flowers102DataModule,
-                                  OxfordIIITPetDataModule)
+from sam_pytorch.datasets import (FGVCAircraftDataModule,
+                                  Flowers102DataModule,
+                                  OxfordIIITPetDataModule,
+                                  StanfordCarsDataModule)
 from sam_pytorch.models import create_model
 from sam_pytorch.train_utils import load_config, seed_everything, train
+
+
+DATA_MODULES = {
+    "fgvc_aircraft": FGVCAircraftDataModule,
+    "flowers102": Flowers102DataModule,
+    "oxford_iiit_pet": OxfordIIITPetDataModule,
+    "stanford_cars": StanfordCarsDataModule,
+}
 
 
 def run(config, optimizer, seed, args) -> None:
@@ -27,13 +37,11 @@ def run(config, optimizer, seed, args) -> None:
         data_root=config["data_root"], batch_size=int(training["batch_size"]),
         validation_fraction=float(split.get("validation_fraction", 0.1)),
         split_seed=int(split.get("seed", config["seed"])),
-        num_workers=int(training.get("num_workers", 0)))
-    if config["dataset"] == "flowers102":
-        data = Flowers102DataModule(**common)
-    elif config["dataset"] == "oxford_iiit_pet":
-        data = OxfordIIITPetDataModule(**common)
-    else:
+        num_workers=int(training.get("num_workers", 0)),
+        image_size=int(config.get("image", {}).get("crop_size", 224)))
+    if config["dataset"] not in DATA_MODULES:
         raise ValueError(f"Unsupported fine-tuning dataset: {config['dataset']}")
+    data = DATA_MODULES[config["dataset"]](**common)
 
     seed_everything(int(config["seed"]))
     model = create_model(config["model"], int(config["num_classes"]),
@@ -46,8 +54,9 @@ def run(config, optimizer, seed, args) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", required=True,
-                        help="Flowers102 or Oxford-IIIT Pet YAML config")
+    parser.add_argument(
+        "--config", required=True,
+        help="FGVC Aircraft, Flowers102, Oxford-IIIT Pet, or Stanford Cars YAML config")
     parser.add_argument("--optimizer", nargs="+", choices=("sgd", "sam"), required=True,
                         help="One or more optimizers; each runs in turn")
     parser.add_argument("--seed", nargs="+", type=int,
@@ -59,8 +68,11 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
     config = load_config(args.config)
-    if config["model"] != "efficientnet_b0":
-        raise ValueError("finetune.py requires an EfficientNet-B0 config")
+    if (config["model"] != "efficientnet_b0"
+            or config.get("dataset") not in DATA_MODULES):
+        raise ValueError(
+            "finetune.py requires an EfficientNet-B0 config for one of its "
+            "four supported datasets")
 
     seeds = args.seed or [int(config["seed"])]
     combos = list(itertools.product(

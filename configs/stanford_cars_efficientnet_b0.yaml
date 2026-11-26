@@ -1,0 +1,36 @@
+experiment: stanford_cars_efficientnet_b0
+dataset: stanford_cars
+data_root: data
+model: efficientnet_b0
+num_classes: 196
+seed: 1
+
+split:
+  validation_fraction: 0.1
+  seed: 1
+
+training:
+  # RTX 3080 (10 GB, fp16): effective batch 1024 via 64 x 16 accumulation.
+  batch_size: 64
+  gradient_accumulation_steps: 16
+  effective_batch_size: 1024
+  epochs: null
+  max_steps: 5000
+  learning_rate: 0.016
+  scheduler: cosine
+  weight_decay: 0.00001
+  momentum: 0.9
+  nesterov: true
+  label_smoothing: 0.1
+  gradient_clip_norm: 1.0
+  freeze_batch_norm_statistics: true
+  evaluate_every: 10
+
+sam:
+  rho: 0.05
+
+pretrained_weights: efficientnet_b0.ra_in1k # Public timm ImageNet-1K RandAugment checkpoint.
+image:
+  crop_size: 224
+
+output_root: outputs
