@@ -7,6 +7,18 @@ Repo so sánh SGD và Sharpness-Aware Minimization (SAM) trên hai nhóm thí ng
 
 Mỗi YAML ghi dataset, mô hình, seed mặc định và hyperparameter. Optimizer, seed và augmentation được chọn khi chạy lệnh. Kết quả được ghi dưới `outputs/`.
 
+## §3.3 Robustness to label noise (Table 4): SGD, SAM, Bootstrap + SAM
+
+Mục này tái hiện ba dòng SGD, SAM, Bootstrap + SAM trong Table 4 (không tái lập Mixup): ResNet-32 train từ đầu trên CIFAR-10 có nhãn nhiễu, đánh giá trên tập test sạch. Repo gốc google-research/sam không có code cho thí nghiệm này, nên pipeline được viết mới: [`label_noise.py`](sam_pytorch/label_noise.py), [`resnet_cifar.py`](sam_pytorch/resnet_cifar.py), `CIFAR10DataModuleForNoise` trong [`datasets.py`](sam_pytorch/datasets.py), bước train chia micro-batch (tùy chọn) trong [`noise_train_step.py`](sam_pytorch/noise_train_step.py), và config [`cifar10_noisy_resnet32.yaml`](configs/cifar10_noisy_resnet32.yaml).
+
+**Toàn bộ thông số, câu trích dẫn chứng minh từ bài báo và lý do chọn, cùng cách chạy: xem [readme_Noise.md](readme_Noise.md).**
+
+```bash
+python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32.yaml \
+  --method sgd sam bootstrap_sam --noise-rate 0.2 0.4 0.6 0.8 --seed 1
+python -m sam_pytorch.label_noise --config configs/cifar10_noisy_resnet32.yaml --summarize
+```
+
 ## Cài đặt
 
 Dùng Python tương thích với phiên bản PyTorch/torchvision đã chọn. Cài cặp PyTorch/torchvision phù hợp hệ điều hành và CUDA từ [trang cài đặt PyTorch](https://pytorch.org/get-started/locally/), sau đó cài các thư viện còn lại:
